@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+**/.venv/
+**/venv/
+
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage.xml
+htmlcov/
+.coverage
+
+# Environment files and local secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Frontend build output
+dist/
+**/dist/
+
+# Editor and operating system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
