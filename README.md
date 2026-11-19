@@ -1,6 +1,6 @@
 # AI-Powered Enterprise Knowledge Portal
 
-CMPE 272 team project by 4-Musketeers. This repository currently contains a minimal full-stack foundation for the portal. AI processing, document management, semantic search, RAG-based question answering, authentication, and database integration will be added in later iterations.
+CMPE 272 team project by 4-Musketeers. This repository contains the portal's full-stack foundation, including PostgreSQL/pgvector integration, SQLAlchemy models and migrations, authentication, and role-based access control. Document processing, semantic search, and RAG-based question answering will be added in later iterations.
 
 ## Project structure
 
@@ -35,20 +35,15 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-Start the backend in that terminal:
+Configure and start the backend in that terminal:
 
 ```bash
 cp .env.example .env
+export JWT_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 The backend reads `DATABASE_URL` from the local `.env` file. The example points to the PostgreSQL Compose service and contains development-only credentials.
-
-Set a local-only JWT signing secret before starting the backend. Do not reuse this value in production:
-
-```bash
-export JWT_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-```
 
 The backend provides `POST /api/auth/login` and `GET /api/auth/me` using bearer tokens. Create a local test user interactively so the password is never placed in shell history or source files:
 
@@ -57,7 +52,7 @@ python -m app.create_test_user --email employee@example.com --role employee
 python -m app.create_test_user --email admin@example.com --role admin
 ```
 
-The command prompts for and confirms each password. Role checks can be reused in future protected endpoints through the `require_roles(...)` dependency.
+The command prompts for and confirms each password. Role checks are reusable for protected endpoints through the `require_roles(...)` dependency.
 
 Apply database migrations from the backend directory:
 
@@ -127,4 +122,4 @@ Example files are provided at the root, `backend/.env.example`, and `frontend/.e
 
 ## Current scope
 
-This iteration includes the frontend shell, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, and a basic SQLAlchemy database connection check. No database models, PDF processing, embeddings, semantic search, RAG, citations, authentication, or document workflows are included yet.
+This iteration includes the frontend shell, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, SQLAlchemy User and Document models, Alembic migrations, JWT authentication, and admin/employee role-based access control. Document management APIs, PDF processing, embeddings, semantic search, RAG, and source citations remain out of scope.
