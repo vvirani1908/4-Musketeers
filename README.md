@@ -13,6 +13,7 @@ CMPE 272 team project by 4-Musketeers. This repository currently contains a mini
 │   ├── src/
 │   ├── package.json
 │   └── vite.config.js
+├── docker-compose.yml # Local PostgreSQL + pgvector service
 ├── .env.example
 └── README.md
 ```
@@ -21,6 +22,7 @@ CMPE 272 team project by 4-Musketeers. This repository currently contains a mini
 
 - Python 3.10 or newer
 - Node.js 18 or newer and npm
+- Docker with Docker Compose
 
 ## Local setup
 
@@ -36,8 +38,20 @@ python -m pip install -r requirements.txt
 Start the backend in that terminal:
 
 ```bash
+cp .env.example .env
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+
+The backend reads `DATABASE_URL` from the local `.env` file. The example points to the PostgreSQL Compose service and contains development-only credentials.
+
+Apply database migrations from the backend directory:
+
+```bash
+alembic upgrade head
+alembic current
+```
+
+The initial migration creates the `users` and `documents` tables, the `user_role` enum, the unique email constraint, and the document ownership foreign key.
 
 In a second terminal, install and start the frontend:
 
@@ -61,10 +75,41 @@ Expected response:
 {"status":"ok"}
 ```
 
+## Local PostgreSQL + pgvector
+
+The database foundation uses Docker Compose, stores data in the named `postgres_data` volume, and binds PostgreSQL to localhost only. The example credentials are for local development only.
+
+Start the database from the repository root:
+
+```bash
+docker compose up -d postgres
+```
+
+Check that the container is healthy:
+
+```bash
+docker compose ps
+```
+
+Verify PostgreSQL and the `vector` extension:
+
+```bash
+docker compose exec postgres pg_isready -U knowledge_portal -d knowledge_portal
+docker compose exec postgres psql -U knowledge_portal -d knowledge_portal -c "CREATE EXTENSION IF NOT EXISTS vector; SELECT extname FROM pg_extension WHERE extname = 'vector';"
+```
+
+Stop the database while preserving its data:
+
+```bash
+docker compose stop postgres
+```
+
+To stop and remove the container while keeping the persistent volume, use `docker compose down`. Removing the volume is destructive and is not needed for normal development.
+
 ## Environment configuration
 
 Example files are provided at the root, `backend/.env.example`, and `frontend/.env.example`. They contain no credentials. Copy values into local environment files only when needed; local `.env` files are ignored by Git.
 
 ## Current scope
 
-This iteration intentionally includes only the frontend shell, backend health endpoint, and development proxy. PostgreSQL/pgvector, PDF processing, embeddings, semantic search, RAG, citations, authentication, and document workflows are out of scope for this foundation.
+This iteration includes the frontend shell, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, and a basic SQLAlchemy database connection check. No database models, PDF processing, embeddings, semantic search, RAG, citations, authentication, or document workflows are included yet.
