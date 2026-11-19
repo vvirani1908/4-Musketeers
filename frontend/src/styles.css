@@ -34,3 +34,22 @@ h1 { font-size: clamp(2.2rem, 7vw, 4.5rem); line-height: 1.04; margin: 1rem 0; }
 .status-connected .status-dot { background: #70e0a3; }
 .status-disconnected { color: #ffadad; }
 .status-disconnected .status-dot { background: #ffadad; }
+.login-form, .account-panel { border-top: 1px solid #304875; margin-top: 2rem; padding-top: 2rem; }
+.login-form { display: grid; gap: 0.55rem; max-width: 28rem; }
+.login-form h2 { margin: 0 0 0.4rem; }
+.login-form label { color: #b4c1d9; font-size: 0.9rem; font-weight: 600; }
+.login-form input {
+  background: #0b1020;
+  border: 1px solid #49618d;
+  border-radius: 0.45rem;
+  color: #e8eefc;
+  font: inherit;
+  margin-bottom: 0.45rem;
+  padding: 0.7rem 0.8rem;
+}
+button { background: #8fb3ff; border: 0; border-radius: 0.45rem; color: #101a34; cursor: pointer; font: inherit; font-weight: 700; padding: 0.75rem 1rem; }
+button:disabled { cursor: wait; opacity: 0.65; }
+.secondary-button { background: transparent; border: 1px solid #8fb3ff; color: #c9d8ff; margin-top: 0.8rem; }
+.auth-error { color: #ffadad; margin: 0.2rem 0 0.4rem; }
+.account-label, .account-role { color: #b4c1d9; margin: 0; }
+.account-email { font-size: 1.1rem; font-weight: 700; margin: 0.25rem 0; }

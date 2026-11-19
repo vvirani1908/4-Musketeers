@@ -5,6 +5,12 @@ const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api'
 function App() {
   const [connectionStatus, setConnectionStatus] = useState('Checking backend connection...')
   const [isConnected, setIsConnected] = useState(false)
+  const [token, setToken] = useState(() => sessionStorage.getItem('access_token'))
+  const [currentUser, setCurrentUser] = useState(null)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [isLoggingIn, setIsLoggingIn] = useState(false)
 
   useEffect(() => {
     fetch(`${apiBaseUrl}/health`)
@@ -22,6 +28,59 @@ function App() {
       })
   }, [])
 
+  useEffect(() => {
+    if (!token) {
+      setCurrentUser(null)
+      return
+    }
+
+    fetch(`${apiBaseUrl}/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error('Session expired')
+        return response.json()
+      })
+      .then(setCurrentUser)
+      .catch(() => {
+        sessionStorage.removeItem('access_token')
+        setToken(null)
+        setAuthError('Your session has expired. Please log in again.')
+      })
+  }, [token])
+
+  async function handleLogin(event) {
+    event.preventDefault()
+    setAuthError('')
+    setIsLoggingIn(true)
+
+    try {
+      const form = new URLSearchParams({ username: email, password })
+      const response = await fetch(`${apiBaseUrl}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form,
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Login failed')
+
+      sessionStorage.setItem('access_token', data.access_token)
+      setToken(data.access_token)
+      setPassword('')
+    } catch (error) {
+      setAuthError(error.message)
+    } finally {
+      setIsLoggingIn(false)
+    }
+  }
+
+  function handleLogout() {
+    sessionStorage.removeItem('access_token')
+    setToken(null)
+    setCurrentUser(null)
+    setAuthError('')
+  }
+
   return (
     <main className="page-shell">
       <section className="hero-card" aria-labelledby="page-title">
@@ -34,6 +93,43 @@ function App() {
           <span className="status-dot" aria-hidden="true" />
           {connectionStatus}
         </div>
+
+        {currentUser ? (
+          <div className="account-panel">
+            <p className="account-label">Signed in as</p>
+            <p className="account-email">{currentUser.email}</p>
+            <p className="account-role">Role: {currentUser.role}</p>
+            <button type="button" className="secondary-button" onClick={handleLogout}>
+              Log out
+            </button>
+          </div>
+        ) : (
+          <form className="login-form" onSubmit={handleLogin}>
+            <h2>Sign in</h2>
+            <label htmlFor="email">Email</label>
+            <input
+              id="email"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+            />
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
+            {authError && <p className="auth-error" role="alert">{authError}</p>}
+            <button type="submit" disabled={isLoggingIn}>
+              {isLoggingIn ? 'Signing in...' : 'Sign in'}
+            </button>
+          </form>
+        )}
       </section>
     </main>
   )

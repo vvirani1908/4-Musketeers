@@ -44,6 +44,21 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 The backend reads `DATABASE_URL` from the local `.env` file. The example points to the PostgreSQL Compose service and contains development-only credentials.
 
+Set a local-only JWT signing secret before starting the backend. Do not reuse this value in production:
+
+```bash
+export JWT_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+```
+
+The backend provides `POST /api/auth/login` and `GET /api/auth/me` using bearer tokens. Create a local test user interactively so the password is never placed in shell history or source files:
+
+```bash
+python -m app.create_test_user --email employee@example.com --role employee
+python -m app.create_test_user --email admin@example.com --role admin
+```
+
+The command prompts for and confirms each password. Role checks can be reused in future protected endpoints through the `require_roles(...)` dependency.
+
 Apply database migrations from the backend directory:
 
 ```bash
