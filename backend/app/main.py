@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import authenticate_user, create_access_token, get_current_user, require_roles
 from app.database import check_database_connection, get_db
+from app.documents import router as documents_router
 from app.models import User, UserRole
 from app.schemas import CurrentUser, Token
 
@@ -12,6 +13,7 @@ app = FastAPI(
     title="AI-Powered Enterprise Knowledge Portal API",
     version="0.1.0",
 )
+app.include_router(documents_router)
 
 
 @app.get("/api/health")

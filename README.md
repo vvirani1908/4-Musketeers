@@ -1,6 +1,6 @@
 # AI-Powered Enterprise Knowledge Portal
 
-CMPE 272 team project by 4-Musketeers. This repository contains the portal's full-stack foundation, including PostgreSQL/pgvector integration, SQLAlchemy models and migrations, authentication, and role-based access control. Document processing, semantic search, and RAG-based question answering will be added in later iterations.
+CMPE 272 team project by 4-Musketeers. This repository contains the portal's full-stack foundation, including PostgreSQL/pgvector integration, SQLAlchemy models and migrations, authentication, role-based access control, and local PDF document management. Document processing, semantic search, and RAG-based question answering will be added in later iterations.
 
 ## Project structure
 
@@ -63,6 +63,19 @@ alembic current
 
 The initial migration creates the `users` and `documents` tables, the `user_role` enum, the unique email constraint, and the document ownership foreign key.
 
+## Document management
+
+Authenticated users can list and download PDF documents. Admin users can also upload and delete them; employee users have read-only access. Uploaded files are stored locally under `backend/storage/documents` by default, while metadata is stored in PostgreSQL. The storage directory is ignored by Git.
+
+The API provides:
+
+- `POST /api/documents` — admin-only PDF upload
+- `GET /api/documents` — authenticated document metadata listing
+- `GET /api/documents/{document_id}/download` — authenticated PDF download
+- `DELETE /api/documents/{document_id}` — admin-only deletion
+
+Uploads use generated filenames, preserve the original filename as metadata, reject non-PDF content, and enforce a 10 MB default limit. PDF text extraction, embeddings, semantic search, and RAG are not implemented yet.
+
 In a second terminal, install and start the frontend:
 
 ```bash
@@ -122,4 +135,4 @@ Example files are provided at the root, `backend/.env.example`, and `frontend/.e
 
 ## Current scope
 
-This iteration includes the frontend shell, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, SQLAlchemy User and Document models, Alembic migrations, JWT authentication, and admin/employee role-based access control. Document management APIs, PDF processing, embeddings, semantic search, RAG, and source citations remain out of scope.
+This iteration includes the frontend shell, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, SQLAlchemy User and Document models, Alembic migrations, JWT authentication, admin/employee role-based access control, and local PDF document management. PDF text extraction, embeddings, semantic search, RAG, and source citations remain out of scope.

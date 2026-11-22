@@ -11,6 +11,11 @@ function App() {
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
   const [isLoggingIn, setIsLoggingIn] = useState(false)
+  const [documents, setDocuments] = useState([])
+  const [selectedFile, setSelectedFile] = useState(null)
+  const [documentsError, setDocumentsError] = useState('')
+  const [documentMessage, setDocumentMessage] = useState('')
+  const [isUploading, setIsUploading] = useState(false)
 
   useEffect(() => {
     fetch(`${apiBaseUrl}/health`)
@@ -49,6 +54,29 @@ function App() {
       })
   }, [token])
 
+  useEffect(() => {
+    if (!token) {
+      setDocuments([])
+      return
+    }
+
+    async function loadDocuments() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/documents`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.detail || 'Could not load documents')
+        setDocuments(data)
+        setDocumentsError('')
+      } catch (error) {
+        setDocumentsError(error.message)
+      }
+    }
+
+    loadDocuments()
+  }, [token])
+
   async function handleLogin(event) {
     event.preventDefault()
     setAuthError('')
@@ -79,6 +107,80 @@ function App() {
     setToken(null)
     setCurrentUser(null)
     setAuthError('')
+  }
+
+  async function reloadDocuments() {
+    const response = await fetch(`${apiBaseUrl}/documents`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.detail || 'Could not load documents')
+    setDocuments(data)
+  }
+
+  async function handleUpload(event) {
+    event.preventDefault()
+    if (!selectedFile) return
+
+    setIsUploading(true)
+    setDocumentsError('')
+    setDocumentMessage('')
+    try {
+      const form = new FormData()
+      form.append('file', selectedFile)
+      const response = await fetch(`${apiBaseUrl}/documents`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Upload failed')
+      setSelectedFile(null)
+      event.target.reset()
+      setDocumentMessage(`${data.filename} uploaded successfully.`)
+      await reloadDocuments()
+    } catch (error) {
+      setDocumentsError(error.message)
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  async function handleDownload(document) {
+    try {
+      const response = await fetch(`${apiBaseUrl}/documents/${document.id}/download`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!response.ok) throw new Error('Download failed')
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const link = window.document.createElement('a')
+      link.href = url
+      link.download = document.filename
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      setDocumentsError(error.message)
+    }
+  }
+
+  async function handleDelete(document) {
+    if (!window.confirm(`Delete ${document.filename}?`)) return
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/documents/${document.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!response.ok) {
+        const data = await response.json()
+        throw new Error(data.detail || 'Delete failed')
+      }
+      setDocumentMessage(`${document.filename} deleted.`)
+      await reloadDocuments()
+    } catch (error) {
+      setDocumentsError(error.message)
+    }
   }
 
   return (
@@ -129,6 +231,64 @@ function App() {
               {isLoggingIn ? 'Signing in...' : 'Sign in'}
             </button>
           </form>
+        )}
+
+        {currentUser && (
+          <section className="documents-panel" aria-labelledby="documents-title">
+            <div className="documents-heading">
+              <div>
+                <p className="eyebrow">Knowledge library</p>
+                <h2 id="documents-title">Documents</h2>
+              </div>
+              <span className="document-count">{documents.length}</span>
+            </div>
+
+            {currentUser.role === 'admin' && (
+              <form className="upload-form" onSubmit={handleUpload}>
+                <label htmlFor="document-file">Upload a PDF</label>
+                <div className="upload-controls">
+                  <input
+                    id="document-file"
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    onChange={(event) => setSelectedFile(event.target.files[0] || null)}
+                    required
+                  />
+                  <button type="submit" disabled={!selectedFile || isUploading}>
+                    {isUploading ? 'Uploading...' : 'Upload'}
+                  </button>
+                </div>
+                <small>PDF files only, up to 10 MB.</small>
+              </form>
+            )}
+
+            {documentMessage && <p className="success-message" role="status">{documentMessage}</p>}
+            {documentsError && <p className="auth-error" role="alert">{documentsError}</p>}
+            {documents.length === 0 ? (
+              <p className="empty-state">No documents have been uploaded yet.</p>
+            ) : (
+              <ul className="document-list">
+                {documents.map((document) => (
+                  <li key={document.id} className="document-row">
+                    <div>
+                      <strong>{document.filename}</strong>
+                      <small>Uploaded by user {document.uploaded_by}</small>
+                    </div>
+                    <div className="document-actions">
+                      <button type="button" className="secondary-button" onClick={() => handleDownload(document)}>
+                        Download
+                      </button>
+                      {currentUser.role === 'admin' && (
+                        <button type="button" className="danger-button" onClick={() => handleDelete(document)}>
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         )}
       </section>
     </main>

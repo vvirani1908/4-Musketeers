@@ -19,6 +19,9 @@ coverage.xml
 htmlcov/
 .coverage
 
+# Local uploaded documents
+backend/storage/
+
 # Environment files and local secrets
 .env
 .env.*
