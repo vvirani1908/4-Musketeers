@@ -17,3 +17,12 @@ class CurrentUser(BaseModel):
     email: str
     role: UserRole
     created_at: datetime
+
+
+class DocumentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    filename: str
+    uploaded_by: int
+    created_at: datetime
