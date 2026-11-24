@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,8 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.auth import get_current_user, require_roles
 from app.database import get_db
-from app.models import Document, User, UserRole
-from app.schemas import DocumentResponse
+from app.models import Document, DocumentChunk, User, UserRole
+from app.processing import (
+    get_embedding_model,
+    index_document,
+    mark_processing_failed,
+    process_document_in_background,
+)
+from app.schemas import DocumentResponse, SearchResult
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +64,7 @@ def document_path(document: Document) -> Path:
 
 @router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: User = Depends(require_roles(UserRole.ADMIN)),
     db: Session = Depends(get_db),
@@ -105,6 +112,10 @@ async def upload_document(
         db.commit()
         database_committed = True
         db.refresh(document)
+        document.processing_status = "indexing"
+        db.commit()
+        db.refresh(document)
+        background_tasks.add_task(process_document_in_background, document.id, str(final_path))
         return document
     except HTTPException:
         db.rollback()
@@ -145,6 +156,96 @@ def download_document(
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Document file not found")
     return FileResponse(path, media_type="application/pdf", filename=document.filename)
+
+
+@router.get("/search", response_model=list[SearchResult])
+def semantic_search(
+    q: str = Query(min_length=1, max_length=500),
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[SearchResult]:
+    """Return the closest indexed chunks for an authenticated user."""
+    query_embedding = get_embedding_model().encode([q], normalize_embeddings=True)[0].tolist()
+    distance = DocumentChunk.embedding.cosine_distance(query_embedding)
+    rows = db.execute(
+        select(Document, DocumentChunk, distance.label("distance"))
+        .join(DocumentChunk, DocumentChunk.document_id == Document.id)
+        .where(Document.processing_status == "indexed")
+        .order_by(distance)
+        .limit(50)
+    ).all()
+    results: list[SearchResult] = []
+    for document, chunk, row_distance in rows:
+        similarity = max(0.0, min(1.0, 1.0 - float(row_distance)))
+        if similarity < 0.35:
+            continue
+        snippet = chunk.content.strip()
+        if len(snippet) > 420:
+            snippet = snippet[:417].rsplit(" ", 1)[0] + "..."
+        if any(
+            result.document_id == document.id
+            and result.page_number == chunk.page_number
+            and _text_overlap(result.snippet, snippet) >= 0.75
+            for result in results
+        ):
+            continue
+        results.append(
+            SearchResult(
+                document_id=document.id,
+                title=document.filename,
+                snippet=snippet,
+                page_number=chunk.page_number,
+                similarity=similarity,
+            )
+        )
+        if len(results) == 5:
+            break
+    return results
+
+
+def _text_overlap(first: str, second: str) -> float:
+    first_words = set(first.lower().split())
+    second_words = set(second.lower().split())
+    if not first_words or not second_words:
+        return 0.0
+    return len(first_words & second_words) / min(len(first_words), len(second_words))
+
+
+@router.post("/index", response_model=dict[str, int])
+def index_existing_documents(
+    _: User = Depends(require_roles(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+) -> dict[str, int]:
+    """Index all documents not currently indexed (for pre-feature uploads)."""
+    documents = list(db.scalars(select(Document).where(Document.processing_status != "indexed")))
+    indexed = 0
+    for document in documents:
+        try:
+            index_document(db, document, document_path(document))
+            indexed += 1
+        except Exception as error:
+            logger.exception("Failed to index existing document %s", document.id)
+            mark_processing_failed(db, document, error)
+    return {"indexed_documents": indexed}
+
+
+@router.post("/{document_id}/index", response_model=DocumentResponse)
+def reindex_document(
+    document_id: int,
+    _: User = Depends(require_roles(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+) -> Document:
+    """Retry indexing one document."""
+    document = db.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        index_document(db, document, document_path(document))
+    except Exception as error:
+        logger.exception("Failed to index document %s", document.id)
+        mark_processing_failed(db, document, error)
+    db.refresh(document)
+    return document
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

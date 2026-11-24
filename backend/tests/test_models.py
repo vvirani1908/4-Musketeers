@@ -3,12 +3,12 @@ import unittest
 from sqlalchemy import Enum as SqlEnum, inspect
 
 from app.database import Base
-from app.models import Document, User, UserRole
+from app.models import Document, DocumentChunk, User, UserRole
 
 
 class ModelTests(unittest.TestCase):
     def test_models_are_registered_with_metadata(self) -> None:
-        self.assertEqual(set(Base.metadata.tables), {"users", "documents"})
+        self.assertEqual(set(Base.metadata.tables), {"users", "documents", "document_chunks"})
 
     def test_user_columns_and_constraints(self) -> None:
         table = User.__table__
@@ -30,6 +30,8 @@ class ModelTests(unittest.TestCase):
         self.assertFalse(table.c.storage_path.nullable)
         self.assertFalse(table.c.uploaded_by.nullable)
         self.assertFalse(table.c.created_at.nullable)
+        self.assertFalse(table.c.processing_status.nullable)
+        self.assertTrue(table.c.processing_error.nullable)
         foreign_key = next(iter(table.c.uploaded_by.foreign_keys))
         self.assertEqual(foreign_key.target_fullname, "users.id")
 
@@ -38,6 +40,7 @@ class ModelTests(unittest.TestCase):
         self.assertIs(Document.uploader.property.mapper.class_, User)
         self.assertEqual(User.documents.property.back_populates, "uploader")
         self.assertEqual(Document.uploader.property.back_populates, "documents")
+        self.assertIs(Document.chunks.property.mapper.class_, DocumentChunk)
 
     def test_role_values(self) -> None:
         self.assertEqual(UserRole.ADMIN.value, "admin")

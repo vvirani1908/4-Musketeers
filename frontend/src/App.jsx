@@ -16,6 +16,23 @@ function App() {
   const [documentsError, setDocumentsError] = useState('')
   const [documentMessage, setDocumentMessage] = useState('')
   const [isUploading, setIsUploading] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [isSearching, setIsSearching] = useState(false)
+
+  function resetUserScopedState() {
+    setCurrentUser(null)
+    setEmail('')
+    setPassword('')
+    setDocuments([])
+    setSelectedFile(null)
+    setDocumentsError('')
+    setDocumentMessage('')
+    setIsUploading(false)
+    setSearchQuery('')
+    setSearchResults([])
+    setIsSearching(false)
+  }
 
   useEffect(() => {
     fetch(`${apiBaseUrl}/health`)
@@ -35,7 +52,7 @@ function App() {
 
   useEffect(() => {
     if (!token) {
-      setCurrentUser(null)
+      resetUserScopedState()
       return
     }
 
@@ -53,6 +70,14 @@ function App() {
         setAuthError('Your session has expired. Please log in again.')
       })
   }, [token])
+
+  useEffect(() => {
+    if (!token || !documents.some((document) => ['pending', 'indexing'].includes(document.processing_status))) return undefined
+    const interval = window.setInterval(() => {
+      reloadDocuments().catch((error) => setDocumentsError(error.message))
+    }, 2000)
+    return () => window.clearInterval(interval)
+  }, [token, documents])
 
   useEffect(() => {
     if (!token) {
@@ -93,6 +118,7 @@ function App() {
       if (!response.ok) throw new Error(data.detail || 'Login failed')
 
       sessionStorage.setItem('access_token', data.access_token)
+      resetUserScopedState()
       setToken(data.access_token)
       setPassword('')
     } catch (error) {
@@ -104,8 +130,8 @@ function App() {
 
   function handleLogout() {
     sessionStorage.removeItem('access_token')
+    resetUserScopedState()
     setToken(null)
-    setCurrentUser(null)
     setAuthError('')
   }
 
@@ -181,6 +207,47 @@ function App() {
     } catch (error) {
       setDocumentsError(error.message)
     }
+  }
+
+  async function handleReindex(document) {
+    try {
+      const response = await fetch(`${apiBaseUrl}/documents/${document.id}/index`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Re-indexing failed')
+      setDocumentMessage(`${document.filename} re-indexing requested.`)
+      await reloadDocuments()
+    } catch (error) {
+      setDocumentsError(error.message)
+    }
+  }
+
+  async function handleSearch(event) {
+    event.preventDefault()
+    if (!searchQuery.trim()) return
+    setIsSearching(true)
+    setDocumentsError('')
+    try {
+      const response = await fetch(`${apiBaseUrl}/documents/search?q=${encodeURIComponent(searchQuery)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Search failed')
+      setSearchResults(data)
+    } catch (error) {
+      setDocumentsError(error.message)
+    } finally {
+      setIsSearching(false)
+    }
+  }
+
+  function processingLabel(document) {
+    if (document.processing_status === 'failed') return `Indexing failed: ${document.processing_error || 'Unknown processing error'}`
+    if (document.processing_status === 'indexed') return 'Indexed and searchable'
+    if (document.processing_status === 'indexing') return 'Indexing…'
+    return 'Waiting to index…'
   }
 
   return (
@@ -262,6 +329,41 @@ function App() {
               </form>
             )}
 
+            <form className="search-form" onSubmit={handleSearch}>
+              <label htmlFor="search-query">Search indexed documents</label>
+              <div className="search-controls">
+                <input
+                  id="search-query"
+                  type="search"
+                  placeholder="Try a phrase or topic"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                />
+                <button type="submit" disabled={!searchQuery.trim() || isSearching}>
+                  {isSearching ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+            </form>
+
+            {searchQuery && searchResults.length === 0 && !isSearching && (
+              <p className="empty-state">No matching indexed content.</p>
+            )}
+            {searchResults.length > 0 && (
+              <div className="search-results" aria-live="polite">
+                <h3>Search results</h3>
+                {searchResults.map((result) => (
+                  <article key={`${result.document_id}-${result.page_number}-${result.snippet}`} className="search-result">
+                    <strong>{result.title}</strong>
+                    <small>{result.page_number ? `Page ${result.page_number} · ` : ''}{Math.round(result.similarity * 100)}% match</small>
+                    <details>
+                      <summary>View context</summary>
+                      <p>{result.snippet}</p>
+                    </details>
+                  </article>
+                ))}
+              </div>
+            )}
+
             {documentMessage && <p className="success-message" role="status">{documentMessage}</p>}
             {documentsError && <p className="auth-error" role="alert">{documentsError}</p>}
             {documents.length === 0 ? (
@@ -273,15 +375,25 @@ function App() {
                     <div>
                       <strong>{document.filename}</strong>
                       <small>Uploaded by user {document.uploaded_by}</small>
+                      <small className={`processing-status processing-${document.processing_status}`}>
+                        {processingLabel(document)}
+                      </small>
                     </div>
                     <div className="document-actions">
                       <button type="button" className="secondary-button" onClick={() => handleDownload(document)}>
                         Download
                       </button>
                       {currentUser.role === 'admin' && (
-                        <button type="button" className="danger-button" onClick={() => handleDelete(document)}>
-                          Delete
-                        </button>
+                        <>
+                          {document.processing_status === 'failed' && (
+                            <button type="button" className="secondary-button" onClick={() => handleReindex(document)}>
+                              Retry indexing
+                            </button>
+                          )}
+                          <button type="button" className="danger-button" onClick={() => handleDelete(document)}>
+                            Delete
+                          </button>
+                        </>
                       )}
                     </div>
                   </li>

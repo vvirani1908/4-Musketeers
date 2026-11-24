@@ -2,9 +2,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, literal
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -13,7 +14,7 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret-key")
 from app.auth import hash_password  # noqa: E402
 from app.database import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import User, UserRole  # noqa: E402
+from app.models import DocumentChunk, User, UserRole  # noqa: E402
 
 
 PDF_BYTES = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
@@ -85,11 +86,12 @@ class DocumentApiTests(unittest.TestCase):
         token = self.login("admin@example.com", "Admin-test-password")
         headers = {"Authorization": f"Bearer {token}"}
 
-        upload = self.client.post(
-            "/api/documents",
-            headers=headers,
-            files={"file": ("../../quarterly-report.pdf", PDF_BYTES, "application/pdf")},
-        )
+        with patch("app.documents.process_document_in_background"):
+            upload = self.client.post(
+                "/api/documents",
+                headers=headers,
+                files={"file": ("../../quarterly-report.pdf", PDF_BYTES, "application/pdf")},
+            )
         self.assertEqual(upload.status_code, 201)
         document = upload.json()
         self.assertEqual(document["filename"], "quarterly-report.pdf")
@@ -115,18 +117,52 @@ class DocumentApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/documents", headers=headers).json(), [])
         self.assertEqual(list(Path(self.storage.name).glob("*")), [])
 
+    def test_upload_schedules_automatic_indexing(self) -> None:
+        token = self.login("admin@example.com", "Admin-test-password")
+        with patch("app.documents.process_document_in_background") as process_document:
+            upload = self.client.post(
+                "/api/documents",
+                headers={"Authorization": f"Bearer {token}"},
+                files={"file": ("scheduled.pdf", PDF_BYTES, "application/pdf")},
+            )
+        self.assertEqual(upload.status_code, 201)
+        self.assertEqual(upload.json()["processing_status"], "indexing")
+        process_document.assert_called_once()
+        self.assertEqual(process_document.call_args.args[0], upload.json()["id"])
+
     def test_employee_can_list_and_download_but_not_upload_or_delete(self) -> None:
         admin_token = self.login("admin@example.com", "Admin-test-password")
-        upload = self.client.post(
-            "/api/documents",
-            headers={"Authorization": f"Bearer {admin_token}"},
-            files={"file": ("policy.pdf", PDF_BYTES, "application/pdf")},
-        )
+        with patch("app.documents.process_document_in_background"):
+            upload = self.client.post(
+                "/api/documents",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                files={"file": ("policy.pdf", PDF_BYTES, "application/pdf")},
+            )
         document_id = upload.json()["id"]
 
         employee_token = self.login("employee@example.com", "Employee-test-password")
         employee_headers = {"Authorization": f"Bearer {employee_token}"}
         self.assertEqual(self.client.get("/api/documents", headers=employee_headers).status_code, 200)
+        class FakeEmbedding:
+            def tolist(self):
+                return [0.0] * 384
+
+        class FakeModel:
+            def encode(self, *_args, **_kwargs):
+                return [FakeEmbedding()]
+
+        with patch("app.documents.get_embedding_model", return_value=FakeModel()), patch.object(
+            DocumentChunk.embedding.type.comparator_factory,
+            "cosine_distance",
+            return_value=literal(0.0),
+        ):
+            self.assertEqual(
+                self.client.get(
+                    "/api/documents/search?q=policy",
+                    headers=employee_headers,
+                ).status_code,
+                200,
+            )
         self.assertEqual(
             self.client.get(
                 f"/api/documents/{document_id}/download",
@@ -144,6 +180,10 @@ class DocumentApiTests(unittest.TestCase):
         )
         self.assertEqual(
             self.client.delete(f"/api/documents/{document_id}", headers=employee_headers).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(f"/api/documents/{document_id}/index", headers=employee_headers).status_code,
             403,
         )
 
