@@ -1,6 +1,6 @@
 # AI-Powered Enterprise Knowledge Portal
 
-CMPE 272 team project by 4-Musketeers. This repository contains the portal's full-stack foundation, including PostgreSQL/pgvector integration, SQLAlchemy models and migrations, authentication, role-based access control, and local PDF document management. Document processing, semantic search, and RAG-based question answering will be added in later iterations.
+CMPE 272 team project by 4-Musketeers. This repository contains the portal's full-stack foundation, including PostgreSQL/pgvector integration, SQLAlchemy models and migrations, authentication, role-based access control, local PDF processing, and semantic search. RAG-based question answering is intentionally not included.
 
 ## Project structure
 
@@ -61,7 +61,7 @@ alembic upgrade head
 alembic current
 ```
 
-The initial migration creates the `users` and `documents` tables, the `user_role` enum, the unique email constraint, and the document ownership foreign key.
+The migrations create the `users`, `documents`, and `document_chunks` tables, the `user_role` enum, and the pgvector extension/index.
 
 ## Document management
 
@@ -73,8 +73,13 @@ The API provides:
 - `GET /api/documents` — authenticated document metadata listing
 - `GET /api/documents/{document_id}/download` — authenticated PDF download
 - `DELETE /api/documents/{document_id}` — admin-only deletion
+- `GET /api/documents/search?q=...` — authenticated semantic search with snippets, pages, and similarity scores
+- `POST /api/documents/index` — admin-only indexing of older/unindexed documents
+- `POST /api/documents/{document_id}/index` — admin-only retry/re-index of one document
 
-Uploads use generated filenames, preserve the original filename as metadata, reject non-PDF content, and enforce a 10 MB default limit. PDF text extraction, embeddings, semantic search, and RAG are not implemented yet.
+Uploads use generated filenames, preserve the original filename as metadata, reject non-PDF content, and enforce a 10 MB default limit. After the document record is committed, text is extracted with `pypdf`, split into overlapping word chunks, and embedded with the local `sentence-transformers` model `all-MiniLM-L6-v2` (384 dimensions). The first indexing run downloads that model into the normal local Hugging Face cache; no paid API or API key is used. Processing status is `pending`, `indexed`, or `failed`; processing failure does not remove the uploaded document.
+
+Deleting a document cascades to its chunks and embeddings. Empty, image-only, corrupt, or unreadable PDFs are retained with `processing_status=failed`. Re-indexing builds embeddings before replacing existing chunks, so a successful existing index remains intact if a retry fails.
 
 In a second terminal, install and start the frontend:
 
@@ -135,4 +140,4 @@ Example files are provided at the root, `backend/.env.example`, and `frontend/.e
 
 ## Current scope
 
-This iteration includes the frontend shell, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, SQLAlchemy User and Document models, Alembic migrations, JWT authentication, admin/employee role-based access control, and local PDF document management. PDF text extraction, embeddings, semantic search, RAG, and source citations remain out of scope.
+This iteration includes the frontend shell, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, SQLAlchemy User, Document, and DocumentChunk models, Alembic migrations, JWT authentication, admin/employee role-based access control, local PDF document management, PDF extraction, local embeddings, and semantic search. LLM-generated answers, RAG, and chat history remain out of scope.

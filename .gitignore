@@ -37,3 +37,6 @@ dist/
 .idea/
 .vscode/
 *.swp
+
+# Local Python virtual environments
+.venv*/

@@ -16,6 +16,9 @@ function App() {
   const [documentsError, setDocumentsError] = useState('')
   const [documentMessage, setDocumentMessage] = useState('')
   const [isUploading, setIsUploading] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [isSearching, setIsSearching] = useState(false)
 
   useEffect(() => {
     fetch(`${apiBaseUrl}/health`)
@@ -183,6 +186,25 @@ function App() {
     }
   }
 
+  async function handleSearch(event) {
+    event.preventDefault()
+    if (!searchQuery.trim()) return
+    setIsSearching(true)
+    setDocumentsError('')
+    try {
+      const response = await fetch(`${apiBaseUrl}/documents/search?q=${encodeURIComponent(searchQuery)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'Search failed')
+      setSearchResults(data)
+    } catch (error) {
+      setDocumentsError(error.message)
+    } finally {
+      setIsSearching(false)
+    }
+  }
+
   return (
     <main className="page-shell">
       <section className="hero-card" aria-labelledby="page-title">
@@ -260,6 +282,38 @@ function App() {
                 </div>
                 <small>PDF files only, up to 10 MB.</small>
               </form>
+            )}
+
+            <form className="search-form" onSubmit={handleSearch}>
+              <label htmlFor="search-query">Search indexed documents</label>
+              <div className="search-controls">
+                <input
+                  id="search-query"
+                  type="search"
+                  placeholder="Try a phrase or topic"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                />
+                <button type="submit" disabled={!searchQuery.trim() || isSearching}>
+                  {isSearching ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+            </form>
+
+            {searchQuery && searchResults.length === 0 && !isSearching && (
+              <p className="empty-state">No matching indexed content.</p>
+            )}
+            {searchResults.length > 0 && (
+              <div className="search-results" aria-live="polite">
+                <h3>Search results</h3>
+                {searchResults.map((result) => (
+                  <article key={`${result.document_id}-${result.page_number}-${result.snippet}`} className="search-result">
+                    <strong>{result.title}</strong>
+                    <small>{result.page_number ? `Page ${result.page_number} · ` : ''}{Math.round(result.similarity * 100)}% match</small>
+                    <p>{result.snippet}</p>
+                  </article>
+                ))}
+              </div>
             )}
 
             {documentMessage && <p className="success-message" role="status">{documentMessage}</p>}
