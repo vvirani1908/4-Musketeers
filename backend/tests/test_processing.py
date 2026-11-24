@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Document, DocumentChunk, User
-from app.processing import chunk_pages, extract_pdf_pages, index_document
+from app.processing import chunk_pages, extract_pdf_pages, index_document, mark_processing_failed
 
 
 class PdfProcessingTests(unittest.TestCase):
@@ -73,6 +73,24 @@ class PdfProcessingTests(unittest.TestCase):
             self.assertEqual(len(stored[0].embedding), 384)
             db.delete(document)
             db.commit()
+            self.assertEqual(db.scalars(select(DocumentChunk)).all(), [])
+
+    def test_unreadable_pdf_is_recorded_as_failed_without_chunks(self) -> None:
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        with TemporaryDirectory() as directory, Session(engine) as db:
+            user = User(email="failed@example.com", password_hash="hash")
+            db.add(user)
+            db.flush()
+            document = Document(filename="unreadable.pdf", storage_path="unreadable.pdf", uploaded_by=user.id)
+            db.add(document)
+            db.commit()
+            with self.assertRaises(Exception):
+                index_document(db, document, Path(directory) / "unreadable.pdf")
+            mark_processing_failed(db, document, ValueError("PDF contains no extractable text"))
+            db.refresh(document)
+            self.assertEqual(document.processing_status, "failed")
+            self.assertIn("no extractable text", document.processing_error)
             self.assertEqual(db.scalars(select(DocumentChunk)).all(), [])
 
 

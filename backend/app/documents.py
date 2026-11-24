@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -13,7 +13,12 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user, require_roles
 from app.database import get_db
 from app.models import Document, DocumentChunk, User, UserRole
-from app.processing import get_embedding_model, index_document, mark_processing_failed
+from app.processing import (
+    get_embedding_model,
+    index_document,
+    mark_processing_failed,
+    process_document_in_background,
+)
 from app.schemas import DocumentResponse, SearchResult
 
 
@@ -59,6 +64,7 @@ def document_path(document: Document) -> Path:
 
 @router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: User = Depends(require_roles(UserRole.ADMIN)),
     db: Session = Depends(get_db),
@@ -106,13 +112,10 @@ async def upload_document(
         db.commit()
         database_committed = True
         db.refresh(document)
-        try:
-            index_document(db, document, final_path)
-            db.refresh(document)
-        except Exception as error:
-            logger.exception("Failed to index uploaded document %s", document.id)
-            mark_processing_failed(db, document, error)
-            db.refresh(document)
+        document.processing_status = "indexing"
+        db.commit()
+        db.refresh(document)
+        background_tasks.add_task(process_document_in_background, document.id, str(final_path))
         return document
     except HTTPException:
         db.rollback()
@@ -169,18 +172,43 @@ def semantic_search(
         .join(DocumentChunk, DocumentChunk.document_id == Document.id)
         .where(Document.processing_status == "indexed")
         .order_by(distance)
-        .limit(20)
+        .limit(50)
     ).all()
-    return [
-        SearchResult(
-            document_id=document.id,
-            title=document.filename,
-            snippet=chunk.content,
-            page_number=chunk.page_number,
-            similarity=max(0.0, min(1.0, 1.0 - float(row_distance))),
+    results: list[SearchResult] = []
+    for document, chunk, row_distance in rows:
+        similarity = max(0.0, min(1.0, 1.0 - float(row_distance)))
+        if similarity < 0.35:
+            continue
+        snippet = chunk.content.strip()
+        if len(snippet) > 420:
+            snippet = snippet[:417].rsplit(" ", 1)[0] + "..."
+        if any(
+            result.document_id == document.id
+            and result.page_number == chunk.page_number
+            and _text_overlap(result.snippet, snippet) >= 0.75
+            for result in results
+        ):
+            continue
+        results.append(
+            SearchResult(
+                document_id=document.id,
+                title=document.filename,
+                snippet=snippet,
+                page_number=chunk.page_number,
+                similarity=similarity,
+            )
         )
-        for document, chunk, row_distance in rows
-    ]
+        if len(results) == 5:
+            break
+    return results
+
+
+def _text_overlap(first: str, second: str) -> float:
+    first_words = set(first.lower().split())
+    second_words = set(second.lower().split())
+    if not first_words or not second_words:
+        return 0.0
+    return len(first_words & second_words) / min(len(first_words), len(second_words))
 
 
 @router.post("/index", response_model=dict[str, int])

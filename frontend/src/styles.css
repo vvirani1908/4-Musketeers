@@ -71,6 +71,11 @@ button:disabled { cursor: wait; opacity: 0.65; }
 .search-result { border-bottom: 1px solid #304875; padding: 0.8rem 0; }
 .search-result small { color: #8f9fbe; display: block; margin-top: 0.25rem; }
 .search-result p { color: #c9d8ff; line-height: 1.5; margin-bottom: 0; }
+.search-result summary { color: #8fb3ff; cursor: pointer; margin-top: 0.55rem; }
+.processing-status { font-weight: 700; margin-top: 0.25rem; }
+.processing-indexed { color: #70e0a3 !important; }
+.processing-indexing, .processing-pending { color: #f4cf72 !important; }
+.processing-failed { color: #ffadad !important; }
 .success-message { color: #70e0a3; }
 .empty-state { color: #b4c1d9; }
 .document-list { display: grid; gap: 0.7rem; list-style: none; margin: 0; padding: 0; }

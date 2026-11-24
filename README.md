@@ -20,7 +20,7 @@ CMPE 272 team project by 4-Musketeers. This repository contains the portal's ful
 
 ## Prerequisites
 
-- Python 3.10 or newer
+- Python 3.12 (supported local development and test environment)
 - Node.js 18 or newer and npm
 - Docker with Docker Compose
 
@@ -77,9 +77,11 @@ The API provides:
 - `POST /api/documents/index` — admin-only indexing of older/unindexed documents
 - `POST /api/documents/{document_id}/index` — admin-only retry/re-index of one document
 
-Uploads use generated filenames, preserve the original filename as metadata, reject non-PDF content, and enforce a 10 MB default limit. After the document record is committed, text is extracted with `pypdf`, split into overlapping word chunks, and embedded with the local `sentence-transformers` model `all-MiniLM-L6-v2` (384 dimensions). The first indexing run downloads that model into the normal local Hugging Face cache; no paid API or API key is used. Processing status is `pending`, `indexed`, or `failed`; processing failure does not remove the uploaded document.
+Uploads use generated filenames, preserve the original filename as metadata, reject non-PDF content, and enforce a 10 MB default limit. After the document record is committed, the API marks it `indexing` and schedules local processing automatically; the background worker extracts text with `pypdf`, splits it into overlapping word chunks, and embeds it with `all-MiniLM-L6-v2` (384 dimensions). The first indexing run downloads that model into the normal local Hugging Face cache; no paid API or API key is used. Processing status is `pending`, `indexing`, `indexed`, or `failed`; processing failure does not remove the uploaded document. The React app refreshes pending/indexing documents until a terminal state is reached.
 
 Deleting a document cascades to its chunks and embeddings. Empty, image-only, corrupt, or unreadable PDFs are retained with `processing_status=failed`. Re-indexing builds embeddings before replacing existing chunks, so a successful existing index remains intact if a retry fails.
+
+Search returns at most five results, filters out scores below `0.35`, and suppresses highly overlapping chunks from the same document page. Similarity is cosine similarity in the range 0–1, where 1 means the normalized query and chunk embeddings are identical; the score is a relevance signal, not a probability.
 
 In a second terminal, install and start the frontend:
 

@@ -6,7 +6,9 @@ import re
 
 from pypdf import PdfReader
 from sqlalchemy import delete
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+import logging
 
 from app.models import Document, DocumentChunk
 
@@ -14,6 +16,7 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 EMBEDDING_DIMENSION = 384
 CHUNK_WORDS = 220
 CHUNK_OVERLAP_WORDS = 40
+logger = logging.getLogger(__name__)
 
 
 def extract_pdf_pages(path: Path) -> list[tuple[int, str]]:
@@ -89,3 +92,28 @@ def mark_processing_failed(db: Session, document: Document, error: Exception) ->
         document.processing_status = "failed"
         document.processing_error = str(error)[:2000]
         db.commit()
+
+
+def process_document_in_background(document_id: int, storage_path: str) -> None:
+    """Process one committed document using a fresh request-independent session."""
+    from app.database import SessionLocal, engine
+
+    if engine is None:
+        return
+    try:
+        with SessionLocal(bind=engine) as db:
+            document = db.get(Document, document_id)
+            if document is None:
+                return
+            index_document(db, document, Path(storage_path))
+    except (OSError, SQLAlchemyError) as error:
+        logger.exception("Background indexing could not access document %s", document_id)
+    except Exception as error:
+        logger.exception("Background indexing failed for document %s", document_id)
+        try:
+            with SessionLocal(bind=engine) as db:
+                document = db.get(Document, document_id)
+                if document is not None:
+                    mark_processing_failed(db, document, error)
+        except (OSError, SQLAlchemyError):
+            logger.exception("Could not persist indexing failure for document %s", document_id)
