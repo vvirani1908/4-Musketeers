@@ -36,3 +36,21 @@ class SearchResult(BaseModel):
     snippet: str
     page_number: int | None = None
     similarity: float
+
+
+class AskRequest(BaseModel):
+    question: str
+
+
+class RAGSource(BaseModel):
+    document_id: int
+    filename: str
+    page_number: int | None = None
+    similarity: float
+
+
+class AskResponse(BaseModel):
+    answer: str
+    sources: list[RAGSource]
+    provider: str | None = None
+    model: str | None = None

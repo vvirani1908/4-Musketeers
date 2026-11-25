@@ -1,6 +1,6 @@
 # AI-Powered Enterprise Knowledge Portal
 
-CMPE 272 team project by 4-Musketeers. This repository contains the portal's full-stack foundation, including PostgreSQL/pgvector integration, SQLAlchemy models and migrations, authentication, role-based access control, local PDF processing, and semantic search. RAG-based question answering is intentionally not included.
+CMPE 272 team project by 4-Musketeers. This repository contains the portal's full-stack application, including PostgreSQL/pgvector integration, SQLAlchemy models and migrations, authentication, role-based access control, local PDF processing, semantic search, and minimal RAG question answering.
 
 ## Project structure
 
@@ -74,6 +74,7 @@ The API provides:
 - `GET /api/documents/{document_id}/download` — authenticated PDF download
 - `DELETE /api/documents/{document_id}` — admin-only deletion
 - `GET /api/documents/search?q=...` — authenticated semantic search with snippets, pages, and similarity scores
+- `POST /api/rag/ask` — authenticated question answering for both admin and employee users
 - `POST /api/documents/index` — admin-only indexing of older/unindexed documents
 - `POST /api/documents/{document_id}/index` — admin-only retry/re-index of one document
 
@@ -92,6 +93,39 @@ npm run dev
 ```
 
 Open the URL printed by Vite, normally `http://localhost:5173`. The frontend requests `/api/health`; Vite proxies that request to the FastAPI service at `http://127.0.0.1:8000`.
+
+## Ask AI / RAG setup
+
+The Ask AI endpoint retrieves up to five indexed chunks using the same local embedding model and pgvector semantic search as the search endpoint. It sends only those excerpts to the selected provider and returns an answer plus source document IDs, filenames, page numbers, and similarity scores. Retrieved text is delimited as untrusted reference data; the model is instructed not to follow instructions inside it or invent unsupported facts. With no relevant context, the endpoint returns a clear insufficient-context answer without calling an LLM.
+
+Copy `backend/.env.example` to `backend/.env` (or export the same variables) and configure one provider. Cohere is the default:
+
+```bash
+LLM_PROVIDER=cohere
+COHERE_API_KEY=your-key
+COHERE_MODEL=command-a-plus-05-2026
+```
+
+To switch providers without changing code, use Gemini instead:
+
+```bash
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your-key
+GEMINI_MODEL=gemini-3.5-flash-lite
+```
+
+The model values are documented live defaults and can be changed with the provider-specific variables. API keys belong only in an ignored local `.env` or the process environment; never put them in frontend variables, source code, database records, logs, or Git. `RAG_RETRIEVAL_LIMIT` (1–10, default 5) and `RAG_MIN_SIMILARITY` (default 0.35) can tune retrieval.
+
+Expected response:
+
+```json
+{
+  "answer": "...",
+  "sources": [
+    {"document_id": 12, "filename": "handbook.pdf", "page_number": 7, "similarity": 0.91}
+  ]
+}
+```
 
 The backend health endpoint can also be checked directly:
 
@@ -142,4 +176,4 @@ Example files are provided at the root, `backend/.env.example`, and `frontend/.e
 
 ## Current scope
 
-This iteration includes the frontend shell, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, SQLAlchemy User, Document, and DocumentChunk models, Alembic migrations, JWT authentication, admin/employee role-based access control, local PDF document management, PDF extraction, local embeddings, and semantic search. LLM-generated answers, RAG, and chat history remain out of scope.
+This iteration includes the frontend shell, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, SQLAlchemy User, Document, and DocumentChunk models, Alembic migrations, JWT authentication, admin/employee role-based access control, local PDF document management, PDF extraction, local embeddings, semantic search, provider-selectable RAG answers, and a non-persistent Ask AI interface. Conversation history and deployment remain out of scope.
