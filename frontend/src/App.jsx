@@ -12,10 +12,15 @@ function App() {
   const [authError, setAuthError] = useState('')
   const [isLoggingIn, setIsLoggingIn] = useState(false)
   const [documents, setDocuments] = useState([])
-  const [selectedFile, setSelectedFile] = useState(null)
+  const [selectedFiles, setSelectedFiles] = useState([])
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState([])
+  const [documentFilter, setDocumentFilter] = useState('')
+  const [documentSort, setDocumentSort] = useState('newest')
   const [documentsError, setDocumentsError] = useState('')
   const [documentMessage, setDocumentMessage] = useState('')
   const [isUploading, setIsUploading] = useState(false)
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false)
+  const [openingSourceId, setOpeningSourceId] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [isSearching, setIsSearching] = useState(false)
@@ -29,7 +34,10 @@ function App() {
     setEmail('')
     setPassword('')
     setDocuments([])
-    setSelectedFile(null)
+    setSelectedFiles([])
+    setSelectedDocumentIds([])
+    setDocumentFilter('')
+    setDocumentSort('newest')
     setDocumentsError('')
     setDocumentMessage('')
     setIsUploading(false)
@@ -68,16 +76,26 @@ function App() {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((response) => {
-        if (!response.ok) throw new Error('Session expired')
+        if (response.status === 401) throw new Error('SESSION_EXPIRED')
+        if (!response.ok) throw new Error('Could not verify your session')
         return response.json()
       })
       .then(setCurrentUser)
-      .catch(() => {
+      .catch((error) => {
+        if (error.message !== 'SESSION_EXPIRED') {
+          setAuthError('Could not verify your session. Please check the backend connection.')
+          return
+        }
         sessionStorage.removeItem('access_token')
         setToken(null)
+        resetUserScopedState()
         setAuthError('Your session has expired. Please log in again.')
       })
   }, [token])
+
+  useEffect(() => {
+    setSelectedDocumentIds((selectedIds) => selectedIds.filter((id) => documents.some((document) => document.id === id)))
+  }, [documents])
 
   useEffect(() => {
     if (!token || !documents.some((document) => ['pending', 'indexing'].includes(document.processing_status))) return undefined
@@ -95,7 +113,7 @@ function App() {
 
     async function loadDocuments() {
       try {
-        const response = await fetch(`${apiBaseUrl}/documents`, {
+        const response = await authenticatedFetch(`${apiBaseUrl}/documents`, {
           headers: { Authorization: `Bearer ${token}` },
         })
         const data = await response.json()
@@ -144,7 +162,7 @@ function App() {
   }
 
   async function reloadDocuments() {
-    const response = await fetch(`${apiBaseUrl}/documents`, {
+    const response = await authenticatedFetch(`${apiBaseUrl}/documents`, {
       headers: { Authorization: `Bearer ${token}` },
     })
     const data = await response.json()
@@ -152,37 +170,86 @@ function App() {
     setDocuments(data)
   }
 
+  function handleSessionExpired() {
+    sessionStorage.removeItem('access_token')
+    resetUserScopedState()
+    setToken(null)
+    setAuthError('Your session has expired. Please log in again.')
+  }
+
+  async function authenticatedFetch(url, options = {}) {
+    const response = await fetch(url, options)
+    if (response.status === 401) {
+      handleSessionExpired()
+      throw new Error('Your session has expired. Please log in again.')
+    }
+    return response
+  }
+
+  function handleFileSelection(event) {
+    const files = Array.from(event.target.files || [])
+    setSelectedFiles(files.map((file, index) => ({
+      file,
+      id: `${file.name}-${file.size}-${file.lastModified}-${index}`,
+      status: 'queued',
+      error: '',
+    })))
+    setDocumentsError('')
+    setDocumentMessage('')
+  }
+
   async function handleUpload(event) {
     event.preventDefault()
-    if (!selectedFile) return
+    if (!selectedFiles.length || isUploading) return
+    const uploadForm = event.currentTarget
 
     setIsUploading(true)
     setDocumentsError('')
     setDocumentMessage('')
+    let successfulUploads = 0
+    const failedUploads = []
+
+    for (const selected of selectedFiles) {
+      setSelectedFiles((files) => files.map((item) => (
+        item.id === selected.id ? { ...item, status: 'uploading', error: '' } : item
+      )))
+
+      try {
+        const form = new FormData()
+        form.append('file', selected.file)
+        const response = await authenticatedFetch(`${apiBaseUrl}/documents`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: form,
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.detail || 'Upload failed')
+        successfulUploads += 1
+        setSelectedFiles((files) => files.map((item) => (
+          item.id === selected.id ? { ...item, status: 'success' } : item
+        )))
+      } catch (error) {
+        failedUploads.push(`${selected.file.name}: ${error.message}`)
+        setSelectedFiles((files) => files.map((item) => (
+          item.id === selected.id ? { ...item, status: 'failed', error: error.message } : item
+        )))
+      }
+    }
+
+    uploadForm.reset()
     try {
-      const form = new FormData()
-      form.append('file', selectedFile)
-      const response = await fetch(`${apiBaseUrl}/documents`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.detail || 'Upload failed')
-      setSelectedFile(null)
-      event.target.reset()
-      setDocumentMessage(`${data.filename} uploaded successfully.`)
       await reloadDocuments()
     } catch (error) {
       setDocumentsError(error.message)
-    } finally {
-      setIsUploading(false)
     }
+    setDocumentMessage(`${successfulUploads} of ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} uploaded successfully.`)
+    if (failedUploads.length) setDocumentsError(`Some uploads failed: ${failedUploads.join(' · ')}`)
+    setIsUploading(false)
   }
 
   async function handleDownload(document) {
     try {
-      const response = await fetch(`${apiBaseUrl}/documents/${document.id}/download`, {
+      const response = await authenticatedFetch(`${apiBaseUrl}/documents/${document.id}/download`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!response.ok) throw new Error('Download failed')
@@ -202,7 +269,7 @@ function App() {
     if (!window.confirm(`Delete ${document.filename}?`)) return
 
     try {
-      const response = await fetch(`${apiBaseUrl}/documents/${document.id}`, {
+      const response = await authenticatedFetch(`${apiBaseUrl}/documents/${document.id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -217,9 +284,75 @@ function App() {
     }
   }
 
+  function toggleDocumentSelection(documentId) {
+    setSelectedDocumentIds((selectedIds) => selectedIds.includes(documentId)
+      ? selectedIds.filter((id) => id !== documentId)
+      : [...selectedIds, documentId])
+  }
+
+  async function handleBulkDelete() {
+    if (!selectedDocumentIds.length || isBulkDeleting) return
+    const selectedDocuments = documents.filter((document) => selectedDocumentIds.includes(document.id))
+    if (!window.confirm(`Delete ${selectedDocuments.length} selected document${selectedDocuments.length === 1 ? '' : 's'}? This cannot be undone.`)) return
+
+    setIsBulkDeleting(true)
+    setDocumentsError('')
+    const failed = []
+    let deleted = 0
+
+    for (const document of selectedDocuments) {
+      try {
+        const response = await authenticatedFetch(`${apiBaseUrl}/documents/${document.id}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!response.ok) {
+          const data = await response.json()
+          throw new Error(data.detail || 'Delete failed')
+        }
+        deleted += 1
+      } catch (error) {
+        failed.push(`${document.filename}: ${error.message}`)
+      }
+    }
+
+    setSelectedDocumentIds([])
+    try {
+      await reloadDocuments()
+    } catch (error) {
+      setDocumentsError(error.message)
+    }
+    setDocumentMessage(`${deleted} of ${selectedDocuments.length} document${selectedDocuments.length === 1 ? '' : 's'} deleted.`)
+    if (failed.length) setDocumentsError(`Some deletions failed: ${failed.join(' · ')}`)
+    setIsBulkDeleting(false)
+  }
+
+  async function handleOpenSource(source) {
+    const sourceKey = `${source.document_id}-${source.page_number || 'document'}`
+    setOpeningSourceId(sourceKey)
+    try {
+      const response = await authenticatedFetch(`${apiBaseUrl}/documents/${source.document_id}/download`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!response.ok) throw new Error('Could not open source document')
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const link = window.document.createElement('a')
+      link.href = source.page_number ? `${url}#page=${source.page_number}` : url
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000)
+    } catch (error) {
+      setDocumentsError(error.message)
+    } finally {
+      setOpeningSourceId('')
+    }
+  }
+
   async function handleReindex(document) {
     try {
-      const response = await fetch(`${apiBaseUrl}/documents/${document.id}/index`, {
+      const response = await authenticatedFetch(`${apiBaseUrl}/documents/${document.id}/index`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -234,11 +367,11 @@ function App() {
 
   async function handleSearch(event) {
     event.preventDefault()
-    if (!searchQuery.trim()) return
+    if (!searchQuery.trim() || isSearching) return
     setIsSearching(true)
     setDocumentsError('')
     try {
-      const response = await fetch(`${apiBaseUrl}/documents/search?q=${encodeURIComponent(searchQuery)}`, {
+      const response = await authenticatedFetch(`${apiBaseUrl}/documents/search?q=${encodeURIComponent(searchQuery)}`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       const data = await response.json()
@@ -253,12 +386,12 @@ function App() {
 
   async function handleAsk(event) {
     event.preventDefault()
-    if (!question.trim()) return
+    if (!question.trim() || isAsking) return
     setIsAsking(true)
     setAiError('')
     setAiAnswer(null)
     try {
-      const response = await fetch(`${apiBaseUrl}/rag/ask`, {
+      const response = await authenticatedFetch(`${apiBaseUrl}/rag/ask`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -276,12 +409,33 @@ function App() {
     }
   }
 
+  function submitOnEnter(event) {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.isComposing) return
+    event.preventDefault()
+    event.currentTarget.form?.requestSubmit()
+  }
+
+  function uploadStatusLabel(selected) {
+    if (selected.status === 'uploading') return 'Uploading…'
+    if (selected.status === 'success') return 'Uploaded; indexing started'
+    if (selected.status === 'failed') return `Upload failed${selected.error ? `: ${selected.error}` : ''}`
+    return 'Ready to upload'
+  }
+
   function processingLabel(document) {
     if (document.processing_status === 'failed') return `Indexing failed: ${document.processing_error || 'Unknown processing error'}`
     if (document.processing_status === 'indexed') return 'Indexed and searchable'
     if (document.processing_status === 'indexing') return 'Indexing…'
     return 'Waiting to index…'
   }
+
+  const visibleDocuments = documents
+    .filter((document) => document.filename.toLowerCase().includes(documentFilter.trim().toLowerCase()))
+    .sort((first, second) => documentSort === 'filename'
+      ? first.filename.localeCompare(second.filename)
+      : new Date(second.created_at) - new Date(first.created_at))
+  const allVisibleDocumentsSelected = visibleDocuments.length > 0
+    && visibleDocuments.every((document) => selectedDocumentIds.includes(document.id))
 
   return (
     <main className="page-shell">
@@ -345,25 +499,58 @@ function App() {
 
             {currentUser.role === 'admin' && (
               <form className="upload-form" onSubmit={handleUpload}>
-                <label htmlFor="document-file">Upload a PDF</label>
+                <div>
+                  <p className="section-kicker">Admin action</p>
+                  <label htmlFor="document-file">Upload PDF files</label>
+                </div>
                 <div className="upload-controls">
+                  <label
+                    className="file-picker-button"
+                    htmlFor="document-file"
+                    role="button"
+                    tabIndex="0"
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        window.document.getElementById('document-file')?.click()
+                      }
+                    }}
+                  >
+                    Choose PDF files
+                  </label>
                   <input
                     id="document-file"
                     type="file"
+                    multiple
                     accept="application/pdf,.pdf"
-                    onChange={(event) => setSelectedFile(event.target.files[0] || null)}
-                    required
+                    onChange={handleFileSelection}
                   />
-                  <button type="submit" disabled={!selectedFile || isUploading}>
-                    {isUploading ? 'Uploading...' : 'Upload'}
+                  <span className="selected-file-count">
+                    {selectedFiles.length ? `${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} selected` : 'No files selected'}
+                  </span>
+                  <button type="submit" disabled={!selectedFiles.length || isUploading}>
+                    {isUploading ? 'Uploading…' : 'Upload files'}
                   </button>
                 </div>
-                <small>PDF files only, up to 10 MB.</small>
+                <small>PDF files only, up to 10 MB each. Files are processed independently.</small>
+                {selectedFiles.length > 0 && (
+                  <ul className="upload-status-list" aria-live="polite">
+                    {selectedFiles.map((selected) => (
+                      <li key={selected.id} className={`upload-status upload-status-${selected.status}`}>
+                        <span>{selected.file.name}</span>
+                        <small>{uploadStatusLabel(selected)}</small>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </form>
             )}
 
             <form className="search-form" onSubmit={handleSearch}>
-              <label htmlFor="search-query">Search indexed documents</label>
+              <div>
+                <p className="section-kicker">Find knowledge</p>
+                <label htmlFor="search-query">Semantic Search</label>
+              </div>
               <div className="search-controls">
                 <input
                   id="search-query"
@@ -371,6 +558,7 @@ function App() {
                   placeholder="Try a phrase or topic"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
+                  onKeyDown={submitOnEnter}
                 />
                 <button type="submit" disabled={!searchQuery.trim() || isSearching}>
                   {isSearching ? 'Searching...' : 'Search'}
@@ -379,7 +567,10 @@ function App() {
             </form>
 
             <form className="ask-form" onSubmit={handleAsk}>
-              <label htmlFor="ai-question">Ask AI about your documents</label>
+              <div>
+                <p className="section-kicker">Synthesize answers</p>
+                <label htmlFor="ai-question">Ask AI</label>
+              </div>
               <div className="ask-controls">
                 <textarea
                   id="ai-question"
@@ -387,6 +578,7 @@ function App() {
                   placeholder="Ask a question about the indexed knowledge base"
                   value={question}
                   onChange={(event) => setQuestion(event.target.value)}
+                  onKeyDown={submitOnEnter}
                 />
                 <button type="submit" disabled={!question.trim() || isAsking}>
                   {isAsking ? 'Thinking...' : 'Ask AI'}
@@ -404,11 +596,24 @@ function App() {
                   <p>{aiAnswer.answer}</p>
                   {aiAnswer.sources.length > 0 && (
                     <div>
-                      <h4>Sources</h4>
+                      <h4>Source transparency</h4>
+                      <p className="source-note">
+                        Sources marked “Cited” were explicitly referenced by the generated answer. The others were retrieved as context but were not explicitly cited.
+                      </p>
                       <ul className="source-list">
                         {aiAnswer.sources.map((source, index) => (
                           <li key={`${source.document_id}-${source.page_number}-${index}`}>
-                            {source.filename}{source.page_number ? ` · Page ${source.page_number}` : ''}
+                            <span className={source.cited ? 'source-cited' : 'source-retrieved'}>
+                              {source.cited ? 'Cited' : 'Retrieved'}
+                            </span>{' '}
+                            <button
+                              type="button"
+                              className="source-link"
+                              onClick={() => handleOpenSource(source)}
+                              disabled={openingSourceId === `${source.document_id}-${source.page_number || 'document'}`}
+                            >
+                              <strong>{source.source_id || `source-${index + 1}`}</strong> · {source.filename}{source.page_number ? ` · Page ${source.page_number}` : ''} · Document {source.document_id}
+                            </button>
                           </li>
                         ))}
                       </ul>
@@ -439,13 +644,61 @@ function App() {
 
             {documentMessage && <p className="success-message" role="status">{documentMessage}</p>}
             {documentsError && <p className="auth-error" role="alert">{documentsError}</p>}
+            <div className="document-tools">
+              <label htmlFor="document-filter">Filter by filename</label>
+              <input
+                id="document-filter"
+                type="search"
+                placeholder="Filter documents"
+                value={documentFilter}
+                onChange={(event) => setDocumentFilter(event.target.value)}
+              />
+              <label htmlFor="document-sort">Sort</label>
+              <select id="document-sort" value={documentSort} onChange={(event) => setDocumentSort(event.target.value)}>
+                <option value="newest">Newest first</option>
+                <option value="filename">Filename A–Z</option>
+              </select>
+            </div>
+            {currentUser.role === 'admin' && documents.length > 0 && (
+              <div className="bulk-controls">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setSelectedDocumentIds(allVisibleDocumentsSelected ? [] : visibleDocuments.map((document) => document.id))}
+                  disabled={!visibleDocuments.length || isBulkDeleting}
+                >
+                  {allVisibleDocumentsSelected ? 'Clear selection' : 'Select all'}
+                </button>
+                <button
+                  type="button"
+                  className="danger-button"
+                  onClick={handleBulkDelete}
+                  disabled={!selectedDocumentIds.length || isBulkDeleting}
+                >
+                  {isBulkDeleting ? 'Deleting…' : `Delete selected (${selectedDocumentIds.length})`}
+                </button>
+                <small>{selectedDocumentIds.length ? `${selectedDocumentIds.length} selected` : 'Select documents to delete'}</small>
+              </div>
+            )}
             {documents.length === 0 ? (
               <p className="empty-state">No documents have been uploaded yet.</p>
+            ) : visibleDocuments.length === 0 ? (
+              <p className="empty-state">No documents match this filename filter.</p>
             ) : (
               <ul className="document-list">
-                {documents.map((document) => (
+                {visibleDocuments.map((document) => (
                   <li key={document.id} className="document-row">
                     <div>
+                      {currentUser.role === 'admin' && (
+                        <input
+                          className="document-checkbox"
+                          type="checkbox"
+                          aria-label={`Select ${document.filename}`}
+                          checked={selectedDocumentIds.includes(document.id)}
+                          onChange={() => toggleDocumentSelection(document.id)}
+                          disabled={isBulkDeleting}
+                        />
+                      )}
                       <strong>{document.filename}</strong>
                       <small>Uploaded by user {document.uploaded_by}</small>
                       <small className={`processing-status processing-${document.processing_status}`}>

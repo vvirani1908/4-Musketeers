@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 import re
+from threading import Lock
 
 from pypdf import PdfReader
 from sqlalchemy import delete
@@ -17,6 +18,8 @@ EMBEDDING_DIMENSION = 384
 CHUNK_WORDS = 220
 CHUNK_OVERLAP_WORDS = 40
 logger = logging.getLogger(__name__)
+_embedding_model_lock = Lock()
+_indexing_lock = Lock()
 
 
 def extract_pdf_pages(path: Path) -> list[tuple[int, str]]:
@@ -54,14 +57,29 @@ def chunk_pages(
 
 
 @lru_cache(maxsize=1)
-def get_embedding_model():
+def _load_embedding_model():
     # Import lazily so PDF validation and normal API startup do not initialize torch.
     from sentence_transformers import SentenceTransformer
 
     return SentenceTransformer(EMBEDDING_MODEL_NAME)
 
 
+def get_embedding_model():
+    """Return the shared embedding model, initializing it at most once at a time."""
+    # lru_cache protects its internal data structure, but concurrent cache misses
+    # can still execute the wrapped factory more than once. SentenceTransformer
+    # initialization mutates torch modules, so serialize the first construction.
+    with _embedding_model_lock:
+        return _load_embedding_model()
+
+
 def index_document(db: Session, document: Document, path: Path) -> int:
+    """Serialize document indexing so model inference and DB replacement stay safe."""
+    with _indexing_lock:
+        return _index_document(db, document, path)
+
+
+def _index_document(db: Session, document: Document, path: Path) -> int:
     """Extract, embed, and atomically replace a document's chunks."""
     chunks = chunk_pages(extract_pdf_pages(path))
     texts = [content for _, content in chunks]
