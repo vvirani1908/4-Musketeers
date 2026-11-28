@@ -43,10 +43,12 @@ class AskRequest(BaseModel):
 
 
 class RAGSource(BaseModel):
+    source_id: str
     document_id: int
     filename: str
     page_number: int | None = None
     similarity: float
+    cited: bool = False
 
 
 class AskResponse(BaseModel):

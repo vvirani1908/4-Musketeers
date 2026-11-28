@@ -83,16 +83,28 @@ class RAGApiTests(unittest.TestCase):
         )
 
     def test_employee_can_receive_grounded_answer_and_sources(self):
-        provider = FakeProvider()
+        provider = FakeProvider("Grounded answer [source-1]")
         embedding, distance = self.retrieval_patch()
         with embedding, distance, patch("app.rag.get_llm_provider", return_value=provider):
             response = self.request()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["sources"][0]["filename"], "handbook.pdf")
         self.assertEqual(response.json()["sources"][0]["page_number"], 7)
+        self.assertEqual(response.json()["sources"][0]["source_id"], "source-1")
+        self.assertTrue(response.json()["sources"][0]["cited"])
         self.assertEqual(response.json()["provider"], "gemini")
         self.assertEqual(response.json()["model"], "gemini-3.5-flash-lite")
+        self.assertIn("source_id=source-1", provider.calls[0][1])
         self.assertIn("handbook.pdf", provider.calls[0][1])
+
+    def test_retrieved_source_is_not_marked_cited_without_explicit_reference(self):
+        provider = FakeProvider("Grounded answer without a source marker")
+        embedding, distance = self.retrieval_patch()
+        with embedding, distance, patch("app.rag.get_llm_provider", return_value=provider):
+            response = self.request()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["sources"][0]["source_id"], "source-1")
+        self.assertFalse(response.json()["sources"][0]["cited"])
 
     def test_insufficient_context_does_not_call_llm(self):
         provider = FakeProvider()
@@ -115,6 +127,16 @@ class RAGApiTests(unittest.TestCase):
         with embedding, distance, patch("app.rag.get_llm_provider", side_effect=LLMProviderError("failed")):
             response = self.request()
         self.assertEqual(response.status_code, 502)
+
+    def test_provider_status_errors_are_mapped(self):
+        for provider_status, expected_status in ((429, 429), (504, 504), (401, 502), (403, 502)):
+            embedding, distance = self.retrieval_patch()
+            with self.subTest(provider_status=provider_status), embedding, distance, patch(
+                "app.rag.get_llm_provider",
+                side_effect=LLMProviderError("provider failed", status_code=provider_status),
+            ):
+                response = self.request()
+            self.assertEqual(response.status_code, expected_status)
 
 
 class ProviderAdapterTests(unittest.TestCase):

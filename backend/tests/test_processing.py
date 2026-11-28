@@ -1,5 +1,7 @@
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import sleep
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -8,10 +10,49 @@ from sqlalchemy.orm import Session
 
 from app.database import Base
 from app.models import Document, DocumentChunk, User
-from app.processing import chunk_pages, extract_pdf_pages, index_document, mark_processing_failed
+from app.processing import chunk_pages, extract_pdf_pages, get_embedding_model, index_document, mark_processing_failed
 
 
 class PdfProcessingTests(unittest.TestCase):
+    def test_embedding_model_initialization_is_singleton_under_concurrency(self) -> None:
+        model = object()
+        initialization_count = 0
+
+        def load_model(*_args, **_kwargs):
+            nonlocal initialization_count
+            initialization_count += 1
+            sleep(0.02)
+            return model
+
+        from app.processing import _load_embedding_model
+
+        _load_embedding_model.cache_clear()
+        try:
+            with patch("sentence_transformers.SentenceTransformer", side_effect=load_model):
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    models = list(executor.map(lambda _: get_embedding_model(), range(8)))
+            self.assertEqual(initialization_count, 1)
+            self.assertTrue(all(candidate is model for candidate in models))
+        finally:
+            _load_embedding_model.cache_clear()
+
+    def test_concurrent_indexing_operations_are_serialized(self) -> None:
+        active_operations = 0
+        maximum_active_operations = 0
+
+        def fake_index(*_args):
+            nonlocal active_operations, maximum_active_operations
+            active_operations += 1
+            maximum_active_operations = max(maximum_active_operations, active_operations)
+            sleep(0.02)
+            active_operations -= 1
+            return 1
+
+        with patch("app.processing._index_document", side_effect=fake_index):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                list(executor.map(lambda _: index_document(None, None, Path("ignored.pdf")), range(2)))
+        self.assertEqual(maximum_active_operations, 1)
+
     def test_extract_pdf_pages_keeps_one_based_page_numbers(self) -> None:
         class FakePage:
             def __init__(self, text):
