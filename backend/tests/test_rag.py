@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, literal
+from sqlalchemy import create_engine, literal, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -105,6 +105,32 @@ class RAGApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["sources"][0]["source_id"], "source-1")
         self.assertFalse(response.json()["sources"][0]["cited"])
+
+    def test_grouped_citations_mark_each_referenced_source_cited(self):
+        with Session(self.engine) as db:
+            document = db.scalar(select(Document).where(Document.filename == "handbook.pdf"))
+            for chunk_index in range(1, 4):
+                db.add(DocumentChunk(
+                    document_id=document.id,
+                    chunk_index=chunk_index,
+                    page_number=chunk_index + 7,
+                    content=f"Supporting context {chunk_index}.",
+                    embedding=[0.0] * 384,
+                ))
+            db.commit()
+
+        provider = FakeProvider("Answer [source-2, source-3]\nFollow-up [source-3, source-4]")
+        embedding, distance = self.retrieval_patch()
+        with embedding, distance, patch("app.rag.get_llm_provider", return_value=provider):
+            response = self.request()
+        self.assertEqual(response.status_code, 200)
+        cited_by_id = {source["source_id"]: source["cited"] for source in response.json()["sources"]}
+        self.assertEqual(cited_by_id, {
+            "source-1": False,
+            "source-2": True,
+            "source-3": True,
+            "source-4": True,
+        })
 
     def test_insufficient_context_does_not_call_llm(self):
         provider = FakeProvider()

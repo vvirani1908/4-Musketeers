@@ -1,7 +1,9 @@
+import hashlib
 import logging
 import os
 import tempfile
 from pathlib import Path
+from threading import Lock
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
@@ -27,6 +29,7 @@ router = APIRouter(prefix="/api/documents", tags=["documents"])
 PDF_SIGNATURE = b"%PDF-"
 CHUNK_SIZE = 1024 * 1024
 DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024
+_upload_duplicate_lock = Lock()
 
 
 def get_storage_directory() -> Path:
@@ -60,6 +63,23 @@ def document_path(document: Document) -> Path:
     except ValueError:
         raise HTTPException(status_code=500, detail="Invalid document storage path") from None
     return candidate
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stored_file:
+        while chunk := stored_file.read(CHUNK_SIZE):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def find_duplicate_document(db: Session, content_hash: str) -> Document | None:
+    """Find an existing document with identical stored PDF bytes."""
+    for document in db.scalars(select(Document)):
+        path = document_path(document)
+        if path.is_file() and file_sha256(path) == content_hash:
+            return document
+    return None
 
 
 @router.post("", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
@@ -98,25 +118,33 @@ async def upload_document(
         if first_bytes != PDF_SIGNATURE:
             raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF")
 
-        generated_filename = f"{uuid4().hex}.pdf"
-        final_path = storage_directory / generated_filename
-        temporary_path.replace(final_path)
-        temporary_path = None
+        content_hash = file_sha256(temporary_path)
+        # Serialize the check and commit so simultaneous identical uploads
+        # cannot both pass the duplicate check.
+        with _upload_duplicate_lock:
+            duplicate = find_duplicate_document(db, content_hash)
+            if duplicate is not None:
+                raise HTTPException(status_code=409, detail="This PDF has already been uploaded.")
 
-        document = Document(
-            filename=filename,
-            storage_path=generated_filename,
-            uploaded_by=current_user.id,
-        )
-        db.add(document)
-        db.commit()
-        database_committed = True
-        db.refresh(document)
-        document.processing_status = "indexing"
-        db.commit()
-        db.refresh(document)
-        background_tasks.add_task(process_document_in_background, document.id, str(final_path))
-        return document
+            generated_filename = f"{uuid4().hex}.pdf"
+            final_path = storage_directory / generated_filename
+            temporary_path.replace(final_path)
+            temporary_path = None
+
+            document = Document(
+                filename=filename,
+                storage_path=generated_filename,
+                uploaded_by=current_user.id,
+            )
+            db.add(document)
+            db.commit()
+            database_committed = True
+            db.refresh(document)
+            document.processing_status = "indexing"
+            db.commit()
+            db.refresh(document)
+            background_tasks.add_task(process_document_in_background, document.id, str(final_path))
+            return document
     except HTTPException:
         db.rollback()
         raise
@@ -239,11 +267,21 @@ def reindex_document(
     document = db.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    was_indexed = document.processing_status == "indexed"
     try:
         index_document(db, document, document_path(document))
     except Exception as error:
         logger.exception("Failed to index document %s", document.id)
-        mark_processing_failed(db, document, error)
+        if was_indexed:
+            # index_document commits only after the replacement chunks are ready.
+            # Roll back any pending delete/insert and retain the last usable index.
+            db.rollback()
+            document = db.get(Document, document_id)
+            document.processing_status = "indexed"
+            document.processing_error = None
+            db.commit()
+        else:
+            mark_processing_failed(db, document, error)
     db.refresh(document)
     return document
 

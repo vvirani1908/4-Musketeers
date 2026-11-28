@@ -78,6 +78,7 @@ button:disabled { cursor: not-allowed; opacity: 0.65; }
 .upload-status { align-items: baseline; display: flex; gap: 0.8rem; justify-content: space-between; }
 .upload-status small { text-align: right; }
 .upload-status-success small { color: #70e0a3; }
+.upload-status-duplicate small { color: #f4cf72; }
 .upload-status-failed small { color: #ffadad; }
 .upload-status-uploading small { color: #f4cf72; }
 .search-form { background: rgba(11, 16, 32, 0.45); border: 1px solid #304875; border-radius: 0.7rem; display: grid; gap: 0.8rem; margin-bottom: 1rem; padding: clamp(1rem, 3vw, 1.35rem); }

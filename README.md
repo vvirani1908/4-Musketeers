@@ -1,6 +1,6 @@
 # AI-Powered Enterprise Knowledge Portal
 
-CMPE 272 team project by 4-Musketeers. This repository contains the portal's full-stack application, including PostgreSQL/pgvector integration, SQLAlchemy models and migrations, authentication, role-based access control, local PDF processing, semantic search, and minimal RAG question answering.
+CMPE 272 team project by 4-Musketeers. This repository contains a full-stack enterprise knowledge portal with authenticated PDF management, local indexing, exact pgvector semantic search, and provider-selectable RAG question answering.
 
 ## Project structure
 
@@ -18,10 +18,14 @@ CMPE 272 team project by 4-Musketeers. This repository contains the portal's ful
 └── README.md
 ```
 
+## Architecture overview
+
+The React/Vite frontend calls the FastAPI backend through the `/api` development proxy. FastAPI handles JWT authentication, admin/employee RBAC, PDF storage, document processing, Semantic Search, and Ask AI. PostgreSQL with pgvector stores users, document metadata, extracted chunks, and 384-dimensional embeddings. PDF extraction and embedding run locally; Ask AI sends retrieved excerpts to the configured Cohere or Gemini provider. The frontend does not receive provider API keys or direct filesystem paths.
+
 ## Prerequisites
 
 - Python 3.12 (supported local development and test environment)
-- Node.js 18 or newer and npm
+- Node.js 20.19 or newer (or 22.12 or newer) and npm; the installed Vite 8 toolchain requires this range
 - Docker with Docker Compose
 
 ## Initial installation and configuration
@@ -92,7 +96,9 @@ docker compose stop postgres
 
 The named `postgres_data` volume and uploaded documents remain intact. `docker compose down` also preserves the named volume, but removing the volume is destructive and is not needed for normal shutdown.
 
-The migrations create the `users`, `documents`, and `document_chunks` tables, the `user_role` enum, and the pgvector extension/index.
+The migrations create the `users`, `documents`, and `document_chunks` tables, the `user_role` enum, and the pgvector extension. Migration `0004_exact_vector_search` removes the IVFFlat embedding index for the current small local dataset, so Semantic Search and RAG use exact cosine-distance scans over the stored vectors.
+
+A fresh database contains schema and user tables only; it does not contain demo PDFs or document chunks. Upload public or fictional demo documents through the admin UI after setup.
 
 ## Document management
 
@@ -109,7 +115,7 @@ The API provides:
 - `POST /api/documents/index` — admin-only indexing of older/unindexed documents
 - `POST /api/documents/{document_id}/index` — admin-only retry/re-index of one document
 
-Uploads use generated filenames, preserve the original filename as metadata, reject non-PDF content, and enforce a 10 MB default limit. After the document record is committed, the API marks it `indexing` and schedules local processing automatically; the background worker extracts text with `pypdf`, splits it into overlapping word chunks, and embeds it with `all-MiniLM-L6-v2` (384 dimensions). The first indexing run downloads that model into the normal local Hugging Face cache; no paid API or API key is used. Processing status is `pending`, `indexing`, `indexed`, or `failed`; processing failure does not remove the uploaded document. The React app refreshes pending/indexing documents until a terminal state is reached. In the portal, Enter submits Semantic Search and Ask AI; Shift+Enter creates a newline in Ask AI, and submissions are suppressed while text is being composed with an IME or while the same operation is already running.
+Uploads preserve the original filename as metadata, reject non-PDF content, enforce a 10 MB default limit, and reject identical PDF bytes with HTTP 409 using SHA-256 content comparison. Same filenames with different content are allowed; same content with different filenames is rejected. Successful and duplicate files are not retried from the same frontend selection, while genuinely failed files remain retryable. After a new document record is committed, the API marks it `indexing` and schedules local processing automatically; the background worker extracts text with `pypdf`, splits it into overlapping word chunks, and embeds it with `all-MiniLM-L6-v2` (384 dimensions). The first indexing run downloads that model into the normal local Hugging Face cache; no paid API or API key is used. Processing status is `pending`, `indexing`, `indexed`, or `failed`; processing failure does not remove the uploaded document. The React app refreshes pending/indexing documents until a terminal state is reached. In the portal, Enter submits Semantic Search and Ask AI; Shift+Enter creates a newline in Ask AI, and submissions are suppressed while text is being composed with an IME or while the same operation is already running.
 
 Deleting a document cascades to its chunks and embeddings. Empty, image-only, corrupt, or unreadable PDFs are retained with `processing_status=failed`. Re-indexing builds embeddings before replacing existing chunks, so a successful existing index remains intact if a retry fails.
 
@@ -117,7 +123,7 @@ Search returns at most five results, filters out scores below `0.35`, and suppre
 
 ## Ask AI / RAG setup
 
-The Ask AI endpoint retrieves up to five indexed chunks using the same local embedding model and pgvector semantic search as the search endpoint. It sends only those excerpts to the selected provider and returns an answer plus source IDs, document IDs, filenames, page numbers, similarity scores, and a `cited` flag. A source is marked `cited: true` only when the answer explicitly includes its exact `[source-N]` reference; retrieved context without an explicit reference remains `cited: false`. Retrieved text is delimited as untrusted reference data; the model is instructed not to follow instructions inside it or invent unsupported facts. With no relevant context, the endpoint returns a clear insufficient-context answer and an empty source list without calling an LLM.
+The Ask AI endpoint retrieves up to five indexed chunks using the same local embedding model and exact pgvector cosine search as the search endpoint. It sends only those excerpts to the selected provider and returns an answer plus source IDs, document IDs, filenames, page numbers, similarity scores, and a `cited` flag. A source is marked `cited: true` when the answer explicitly includes an individual reference such as `[source-3]` or a grouped reference such as `[source-2, source-3]`; retrieved context without an explicit reference remains `cited: false`. Retrieved text is delimited as untrusted reference data; the model is instructed not to follow instructions inside it or invent unsupported facts. With no relevant context, the endpoint returns a clear insufficient-context answer and an empty source list without calling an LLM.
 
 Copy `backend/.env.example` to `backend/.env` (or export the same variables) and configure one provider. Cohere is the default:
 
@@ -158,6 +164,19 @@ Expected response:
 - An expired or invalid session shows a re-login message and clears account-specific state. Temporary backend or provider connectivity errors do not log the user out.
 - Ask AI source entries marked `Retrieved` are relevant context returned by retrieval, not proof that the generated answer used them. Entries marked `Cited` correspond to explicit `[source-N]` references in the answer.
 - Ask AI source entries can be opened through the authorized download endpoint; when a page number is available, the frontend requests the PDF and opens a temporary browser blob URL with a page fragment. Browser PDF viewers may not honor page fragments uniformly.
+- Duplicate detection scans existing stored PDFs on each upload, which is suitable for the current small local dataset. It does not automatically remove duplicate records that already exist.
+
+## Demonstration walkthrough
+
+1. Sign in as an admin using a locally created admin user.
+2. Choose one or more public or fictional PDF files, review the filenames, and click `Upload files`.
+3. Wait for each document to show `Indexed and searchable`; failed documents remain available for retry.
+4. Use Semantic Search with a natural-language topic or phrase and inspect the document, page, snippet, and similarity score.
+5. Ask AI the same or a broader question. Review the provider/model display, answer, and source entries. `Cited` entries have explicit `[source-N]` references; `Retrieved` entries were context candidates without an explicit citation.
+6. Open a source document from Ask AI or download it from the document list. Access remains authenticated.
+7. Sign out and sign in as an employee. Employees can read, search, and ask questions but cannot upload, retry indexing, or delete documents.
+
+Only send public or fictional demonstration documents to Cohere or Gemini. Do not send confidential, private, regulated, or otherwise sensitive enterprise content to an external LLM provider.
 
 ## Troubleshooting
 
@@ -177,6 +196,7 @@ source .venv/bin/activate
 python -m pytest tests
 cd ../frontend
 npm ci
+npm test
 npm run build
 ```
 
@@ -227,6 +247,6 @@ To stop and remove the container while keeping the persistent volume, use `docke
 
 Example files are provided at the root, `backend/.env.example`, and `frontend/.env.example`. They contain no credentials. Copy values into local environment files only when needed; local `.env` files are ignored by Git.
 
-## Current scope
+## Current limitations and scope
 
-This iteration includes the frontend shell, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, SQLAlchemy User, Document, and DocumentChunk models, Alembic migrations, JWT authentication, admin/employee role-based access control, local PDF document management, PDF extraction, local embeddings, semantic search, provider-selectable RAG answers, and a non-persistent Ask AI interface. Conversation history and deployment remain out of scope.
+This iteration includes the React frontend, backend health endpoint, development proxy, local PostgreSQL/pgvector foundation, SQLAlchemy User, Document, and DocumentChunk models, Alembic migrations, JWT authentication, admin/employee RBAC, local PDF document management, PDF extraction, local embeddings, exact cosine semantic search, provider-selectable RAG answers, source attribution, and a non-persistent Ask AI interface. The system is PDF-only, has no persistent conversation or search history, and is intended for local development rather than deployment. Very short acronyms or ambiguous short queries may produce weaker semantic matches than descriptive phrases. Conversation history, deployment, and bulk downloads remain out of scope.

@@ -6,11 +6,18 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
 from app.models import Document, DocumentChunk, User
-from app.processing import chunk_pages, extract_pdf_pages, get_embedding_model, index_document, mark_processing_failed
+from app.processing import (
+    chunk_pages,
+    extract_pdf_pages,
+    get_embedding_model,
+    index_document,
+    mark_processing_failed,
+    process_document_in_background,
+)
 
 
 class PdfProcessingTests(unittest.TestCase):
@@ -52,6 +59,35 @@ class PdfProcessingTests(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=2) as executor:
                 list(executor.map(lambda _: index_document(None, None, Path("ignored.pdf")), range(2)))
         self.assertEqual(maximum_active_operations, 1)
+
+    def test_initial_background_indexing_failure_is_persisted(self) -> None:
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(engine)
+        session_factory = sessionmaker(bind=engine)
+        with Session(engine) as db:
+            user = User(email="background-failure@example.com", password_hash="hash")
+            db.add(user)
+            db.flush()
+            document = Document(
+                filename="background-failure.pdf",
+                storage_path="background-failure.pdf",
+                uploaded_by=user.id,
+                processing_status="indexing",
+            )
+            db.add(document)
+            db.commit()
+            document_id = document.id
+
+        with patch("app.database.engine", engine), patch("app.database.SessionLocal", session_factory), patch(
+            "app.processing.index_document", side_effect=ValueError("embedding failed")
+        ):
+            process_document_in_background(document_id, "background-failure.pdf")
+
+        with Session(engine) as db:
+            document = db.get(Document, document_id)
+            self.assertEqual(document.processing_status, "failed")
+            self.assertIn("embedding failed", document.processing_error)
+        engine.dispose()
 
     def test_extract_pdf_pages_keeps_one_based_page_numbers(self) -> None:
         class FakePage:

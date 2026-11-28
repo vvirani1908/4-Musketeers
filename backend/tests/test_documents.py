@@ -14,10 +14,11 @@ os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret-key")
 from app.auth import hash_password  # noqa: E402
 from app.database import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import DocumentChunk, User, UserRole  # noqa: E402
+from app.models import Document, DocumentChunk, User, UserRole  # noqa: E402
 
 
 PDF_BYTES = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
+PDF_BYTES_DIFFERENT = b"%PDF-1.7\n2 0 obj\n<< /Title (Different) >>\nendobj\n%%EOF\n"
 
 
 class DocumentApiTests(unittest.TestCase):
@@ -129,6 +130,114 @@ class DocumentApiTests(unittest.TestCase):
         self.assertEqual(upload.json()["processing_status"], "indexing")
         process_document.assert_called_once()
         self.assertEqual(process_document.call_args.args[0], upload.json()["id"])
+
+    def test_identical_pdf_content_is_rejected_even_with_a_different_filename(self) -> None:
+        token = self.login("admin@example.com", "Admin-test-password")
+        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.documents.process_document_in_background") as process_document:
+            first = self.client.post(
+                "/api/documents",
+                headers=headers,
+                files={"file": ("first-name.pdf", PDF_BYTES, "application/pdf")},
+            )
+            duplicate = self.client.post(
+                "/api/documents",
+                headers=headers,
+                files={"file": ("different-name.pdf", PDF_BYTES, "application/pdf")},
+            )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(duplicate.json()["detail"], "This PDF has already been uploaded.")
+        self.assertEqual(process_document.call_count, 1)
+        self.assertEqual(len(self.client.get("/api/documents", headers=headers).json()), 1)
+
+    def test_same_filename_with_different_content_is_allowed(self) -> None:
+        token = self.login("admin@example.com", "Admin-test-password")
+        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.documents.process_document_in_background"):
+            first = self.client.post(
+                "/api/documents",
+                headers=headers,
+                files={"file": ("same-name.pdf", PDF_BYTES, "application/pdf")},
+            )
+            second = self.client.post(
+                "/api/documents",
+                headers=headers,
+                files={"file": ("same-name.pdf", PDF_BYTES_DIFFERENT, "application/pdf")},
+            )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(len(self.client.get("/api/documents", headers=headers).json()), 2)
+
+    def test_mixed_duplicate_and_new_uploads_preserve_only_new_record(self) -> None:
+        token = self.login("admin@example.com", "Admin-test-password")
+        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.documents.process_document_in_background") as process_document:
+            first = self.client.post(
+                "/api/documents",
+                headers=headers,
+                files={"file": ("existing.pdf", PDF_BYTES, "application/pdf")},
+            )
+            duplicate = self.client.post(
+                "/api/documents",
+                headers=headers,
+                files={"file": ("existing-copy.pdf", PDF_BYTES, "application/pdf")},
+            )
+            new_upload = self.client.post(
+                "/api/documents",
+                headers=headers,
+                files={"file": ("new.pdf", PDF_BYTES_DIFFERENT, "application/pdf")},
+            )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(new_upload.status_code, 201)
+        self.assertEqual(process_document.call_count, 2)
+        self.assertEqual(len(self.client.get("/api/documents", headers=headers).json()), 2)
+
+    def test_failed_reindex_preserves_existing_index_but_initial_failure_is_failed(self) -> None:
+        token = self.login("admin@example.com", "Admin-test-password")
+        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.documents.process_document_in_background"):
+            upload = self.client.post(
+                "/api/documents",
+                headers=headers,
+                files={"file": ("reindex-safe.pdf", PDF_BYTES, "application/pdf")},
+            )
+        document_id = upload.json()["id"]
+
+        with Session(self.engine) as db:
+            document = db.get(Document, document_id)
+            document.processing_status = "indexed"
+            db.add(DocumentChunk(
+                document_id=document_id,
+                chunk_index=0,
+                page_number=1,
+                content="Previously indexed content remains searchable.",
+                embedding=[0.1] * 384,
+            ))
+            db.commit()
+
+        with patch("app.documents.index_document", side_effect=ValueError("new embedding failed")):
+            failed_reindex = self.client.post(f"/api/documents/{document_id}/index", headers=headers)
+        self.assertEqual(failed_reindex.status_code, 200)
+        self.assertEqual(failed_reindex.json()["processing_status"], "indexed")
+        with Session(self.engine) as db:
+            document = db.get(Document, document_id)
+            self.assertEqual(document.processing_status, "indexed")
+            self.assertEqual(document.processing_error, None)
+            self.assertEqual(
+                db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).one().content,
+                "Previously indexed content remains searchable.",
+            )
+
+        with Session(self.engine) as db:
+            document = db.get(Document, document_id)
+            document.processing_status = "indexing"
+            db.commit()
+        with patch("app.documents.index_document", side_effect=ValueError("initial embedding failed")):
+            failed_initial = self.client.post(f"/api/documents/{document_id}/index", headers=headers)
+        self.assertEqual(failed_initial.status_code, 200)
+        self.assertEqual(failed_initial.json()["processing_status"], "failed")
 
     def test_employee_can_list_and_download_but_not_upload_or_delete(self) -> None:
         admin_token = self.login("admin@example.com", "Admin-test-password")

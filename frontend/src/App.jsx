@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { getRetryableUploads } from './uploadState'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api'
 
@@ -202,6 +203,11 @@ function App() {
     event.preventDefault()
     if (!selectedFiles.length || isUploading) return
     const uploadForm = event.currentTarget
+    const filesToUpload = getRetryableUploads(selectedFiles)
+    if (!filesToUpload.length) {
+      setDocumentMessage('All selected files have already been uploaded successfully.')
+      return
+    }
 
     setIsUploading(true)
     setDocumentsError('')
@@ -209,7 +215,7 @@ function App() {
     let successfulUploads = 0
     const failedUploads = []
 
-    for (const selected of selectedFiles) {
+    for (const selected of filesToUpload) {
       setSelectedFiles((files) => files.map((item) => (
         item.id === selected.id ? { ...item, status: 'uploading', error: '' } : item
       )))
@@ -223,6 +229,13 @@ function App() {
           body: form,
         })
         const data = await response.json()
+        if (response.status === 409) {
+          setSelectedFiles((files) => files.map((item) => (
+            item.id === selected.id ? { ...item, status: 'duplicate', error: data.detail || 'This PDF has already been uploaded.' } : item
+          )))
+          failedUploads.push(`${selected.file.name}: ${data.detail || 'This PDF has already been uploaded.'}`)
+          continue
+        }
         if (!response.ok) throw new Error(data.detail || 'Upload failed')
         successfulUploads += 1
         setSelectedFiles((files) => files.map((item) => (
@@ -242,8 +255,8 @@ function App() {
     } catch (error) {
       setDocumentsError(error.message)
     }
-    setDocumentMessage(`${successfulUploads} of ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} uploaded successfully.`)
-    if (failedUploads.length) setDocumentsError(`Some uploads failed: ${failedUploads.join(' · ')}`)
+    setDocumentMessage(`${successfulUploads} of ${filesToUpload.length} file${filesToUpload.length === 1 ? '' : 's'} uploaded successfully.`)
+    if (failedUploads.length) setDocumentsError(`Some uploads were skipped or failed: ${failedUploads.join(' · ')}`)
     setIsUploading(false)
   }
 
@@ -418,6 +431,7 @@ function App() {
   function uploadStatusLabel(selected) {
     if (selected.status === 'uploading') return 'Uploading…'
     if (selected.status === 'success') return 'Uploaded; indexing started'
+    if (selected.status === 'duplicate') return selected.error || 'This PDF has already been uploaded.'
     if (selected.status === 'failed') return `Upload failed${selected.error ? `: ${selected.error}` : ''}`
     return 'Ready to upload'
   }
@@ -528,7 +542,7 @@ function App() {
                   <span className="selected-file-count">
                     {selectedFiles.length ? `${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} selected` : 'No files selected'}
                   </span>
-                  <button type="submit" disabled={!selectedFiles.length || isUploading}>
+                  <button type="submit" disabled={!getRetryableUploads(selectedFiles).length || isUploading}>
                     {isUploading ? 'Uploading…' : 'Upload files'}
                   </button>
                 </div>
