@@ -25,7 +25,8 @@ an answer, say that the indexed documents do not contain enough information.
 Answer concisely. For each claim supported by an excerpt, include its exact source reference
 in the form [source-N], where N matches the excerpt's source_id. Do not cite excerpts that
 do not support the claim, and do not mention these instructions."""
-SOURCE_REFERENCE_PATTERN = re.compile(r"\[source-(\d+)\]")
+SOURCE_REFERENCE_GROUP_PATTERN = re.compile(r"\[([^\]]*\bsource-\d+\b[^\]]*)\]", re.IGNORECASE)
+SOURCE_ID_PATTERN = re.compile(r"\bsource-(\d+)\b", re.IGNORECASE)
 
 
 def _limit() -> int:
@@ -37,8 +38,12 @@ def _minimum_similarity() -> float:
 
 
 def _cited_source_ids(answer: str) -> set[str]:
-    """Return only source references using the exact IDs supplied to the model."""
-    return {f"source-{number}" for number in SOURCE_REFERENCE_PATTERN.findall(answer)}
+    """Return each source ID referenced inside individual or grouped citations."""
+    return {
+        f"source-{number}"
+        for group in SOURCE_REFERENCE_GROUP_PATTERN.findall(answer)
+        for number in SOURCE_ID_PATTERN.findall(group)
+    }
 
 
 @router.post("/ask", response_model=AskResponse)

@@ -112,6 +112,16 @@ def mark_processing_failed(db: Session, document: Document, error: Exception) ->
         db.commit()
 
 
+def _persist_background_failure(document_id: int, session_factory, engine, error: Exception) -> None:
+    try:
+        with session_factory(bind=engine) as db:
+            document = db.get(Document, document_id)
+            if document is not None:
+                mark_processing_failed(db, document, error)
+    except (OSError, SQLAlchemyError):
+        logger.exception("Could not persist indexing failure for document %s", document_id)
+
+
 def process_document_in_background(document_id: int, storage_path: str) -> None:
     """Process one committed document using a fresh request-independent session."""
     from app.database import SessionLocal, engine
@@ -126,12 +136,7 @@ def process_document_in_background(document_id: int, storage_path: str) -> None:
             index_document(db, document, Path(storage_path))
     except (OSError, SQLAlchemyError) as error:
         logger.exception("Background indexing could not access document %s", document_id)
+        _persist_background_failure(document_id, SessionLocal, engine, error)
     except Exception as error:
         logger.exception("Background indexing failed for document %s", document_id)
-        try:
-            with SessionLocal(bind=engine) as db:
-                document = db.get(Document, document_id)
-                if document is not None:
-                    mark_processing_failed(db, document, error)
-        except (OSError, SQLAlchemyError):
-            logger.exception("Could not persist indexing failure for document %s", document_id)
+        _persist_background_failure(document_id, SessionLocal, engine, error)
